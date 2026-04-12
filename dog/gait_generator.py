@@ -87,8 +87,8 @@ _PHASE_OFFSETS = {
 # MIT robot values (500 mm tall): δ_front = 36 mm, δ_rear = 10 mm.
 # Scaled proportionally to our robot's stand height.
 _HEIGHT_RATIO   = STAND_HEIGHT / 500.0
-_DELTA_FRONT    = 36.0 * _HEIGHT_RATIO   # mm — front legs
-_DELTA_REAR     = 10.0 * _HEIGHT_RATIO   # mm — rear  legs
+_DELTA_FRONT    = 28.0 * _HEIGHT_RATIO   # mm — front legs
+_DELTA_REAR     = 28.0 * _HEIGHT_RATIO   # mm — rear legs
 
 # ── Half-stroke length L_span (mm) ────────────────────────────────────────────
 # The foot travels from +L_span to -L_span during stance.
@@ -328,7 +328,8 @@ class GaitGenerator:
         # Hip lever arm is shorter than shoulder/knee, so double the stride
         # length when strafing so each step produces the same body displacement.
         l_span = base_span * (1.0 + abs(dir_y))
-
+        l_span *= 0.65
+        
         p0_x = 0.0
         gl = 0.0
 
@@ -397,7 +398,7 @@ class GaitGenerator:
         rotated into the 2D (dir_x, dir_y) direction so the swing liftoff
         and touchdown positions match the start/end of the stance sweep.
         """
-        ctrl = _scale_ctrl_pts(l_span, STAND_HEIGHT, STEP_HEIGHT)
+        ctrl = _scale_ctrl_pts(l_span, STAND_HEIGHT, STEP_HEIGHT * 2.4)
         bx, bz = _bezier(ctrl, s_sw)
 
         foot_x = bx * dir_x + p0_x

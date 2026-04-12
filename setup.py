@@ -19,7 +19,9 @@ setup(
         (os.path.join('share', package_name, 'urdf'),
             glob('urdf/*.xacro') + glob('urdf/*.urdf')),
         (os.path.join('share', package_name, 'urdf', 'meshes'),
-            glob('urdf/meshes/*.dae')),
+            glob('urdf/meshes/*.dae') +
+            glob('urdf/meshes/*.STL') +
+            glob('urdf/meshes/*.stl')),
         (os.path.join('share', package_name, 'worlds'),
             glob('worlds/*.sdf')),
     ],
@@ -45,6 +47,7 @@ setup(
             'sim_bridge_node        = dog.sim_bridge_node:main',
             'autonomous_bridge_node = dog.autonomous_bridge_node:main',
             'torque_monitor_node    = dog.torque_monitor_node:main',
+            'step_test_node     = dog.step_test_node:main',
         ],
     },
 )

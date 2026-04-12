@@ -9,7 +9,7 @@ Hardware:
   - Jetson Orin Nano running ROS2 Humble
   - mjbots power_dist r4.5b power distribution board
 
-All joint angles are in RADIANS throughout this package.
+All joint angles are in RADsIANS throughout this package.
 The IK solver works internally in degrees but outputs are converted to radians.
 
 Motor zeroing convention:
@@ -24,28 +24,17 @@ Motor zeroing convention:
 Edit this file to match your physical build dimensions.
 """
 
-# ─────────────────────────────────────────────
-# LEG SEGMENT LENGTHS  (millimetres)
-# Measure from pivot centre to pivot centre.
-# ─────────────────────────────────────────────
-HIP_LENGTH    = 130.0   # Distance from hip pivot to shoulder pivot (abduction link)
-UPPER_LENGTH  = 320.0   # Upper leg (femur) length
-LOWER_LENGTH  = 320.0   # Lower leg (tibia) length
+HIP_LENGTH    =   0.0   # 8DOF model: shoulder joints mount directly to base_link
+UPPER_LENGTH  = 240.0   # CAD-derived, start with symmetric upper/lower lengths
+LOWER_LENGTH  = 240.0   # from URDF lower joint pivot offset ≈ 240.26 mm
 
-# ─────────────────────────────────────────────
-# BODY DIMENSIONS  (millimetres)
-# ─────────────────────────────────────────────
-BODY_LENGTH = 430.0   # Front-to-rear hip separation (along X)
-BODY_WIDTH  = 150.0   # Left-to-right hip separation (along Y)
+BODY_LENGTH   = 648.0   # shoulder pivot x: +0.324 to -0.324 m
+BODY_WIDTH    = 233.0   # shoulder pivot y: +0.1165 to -0.1165 m
 
-# ─────────────────────────────────────────────
-# DEFAULT STANCE
-# Mini Cheetah is fully symmetric — all four legs share the same stand height.
-# ─────────────────────────────────────────────
-STAND_HEIGHT  = 540.0   # Body height above ground (mm) — all four legs
-STEP_HEIGHT   =  80.0   # Foot lift height per step (mm)
-STEP_LENGTH   = 150.0   # Foot travel distance per step (mm)
-STEP_DURATION =   0.3   # Seconds per half-cycle (~3.3 Hz trot cadence)
+STAND_HEIGHT  = 395.0   # conservative first estimate for 0.60 / -0.60 neutral
+STEP_HEIGHT   =  70.0   # reduced from old robot
+STEP_LENGTH   =  60.0   # reduced to avoid shuffling / overreach
+STEP_DURATION =   0.45  # slightly slower first pass
 
 # ─────────────────────────────────────────────
 # BODY POSE LIMITS  (degrees, used inside gait/state nodes)
@@ -132,7 +121,7 @@ JOINT_ANGLE_MAX =  2.618   #  150°
 # ─────────────────────────────────────────────
 JOINT_DIRECTION = {
     (0, 1):  1, (0, 2):  1,   # FR shoulder, knee
-    (1, 1): -1, (1, 2): -1,   # FL shoulder, knee
+    (1, 1):  1, (1, 2):  1,   # FL shoulder, knee
     (2, 1):  1, (2, 2):  1,   # RR shoulder, knee
     (3, 1):  1, (3, 2):  1,   # RL shoulder, knee
 }
@@ -159,10 +148,10 @@ JOINT_OFFSETS = {
 #   (UPPER=320 mm, LOWER=320 mm, HIP=130 mm, STAND_HEIGHT=540 mm)
 # ─────────────────────────────────────────────
 NEUTRAL_ANGLES = [
-     0.6112, -0.6112,   # FR: shoulder, knee
-     0.6112, -0.6112,   # FL
-     0.6112, -0.6112,   # RR
-     0.6112, -0.6112,   # RL
+     0.60, -0.60,   # FR: shoulder, knee
+     0.60, -0.60,   # FL
+     0.60, -0.60,   # RR
+     0.60, -0.60,   # RL
 ]
 
 SIT_ANGLES = [

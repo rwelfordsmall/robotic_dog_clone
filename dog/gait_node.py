@@ -56,7 +56,7 @@ class GaitNode(Node):
         self.roll       = 0.0
         self.pitch      = 0.0
         self.robot_state     = RobotState.SITTING
-        self.walk_gait_type  = GaitType.TROT
+        self.walk_gait_type  = GaitType.WALK
 
         self.create_subscription(Twist,  'gait_command', self._cmd_callback,       10)
         self.create_subscription(Vector3,'body_pose',    self._pose_callback,      10)

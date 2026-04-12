@@ -31,7 +31,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String, Float32MultiArray, Bool
-from sensor_msgs.msg import Joy
+from sensor_msgs.msg import Joy, JointState
 from geometry_msgs.msg import Twist, Vector3
 
 from dog.robot_config import (
@@ -52,6 +52,16 @@ _WALK_GAIT_CYCLE = [GaitType.TROT, GaitType.GALLOP, GaitType.WALK, GaitType.CRAW
 
 _SIT_RAMP_DURATION = 2.0   # seconds — time to ease into the sit position
 
+_SIM_JOINT_INDEX = {
+    'fr_shoulder_joint': 0,
+    'fr_knee_joint': 1,
+    'fl_shoulder_joint': 2,
+    'fl_knee_joint': 3,
+    'rr_shoulder_joint': 4,
+    'rr_knee_joint': 5,
+    'rl_shoulder_joint': 6,
+    'rl_knee_joint': 7,
+}
 
 class RobotState:
     IDLE         = 'IDLE'
@@ -117,11 +127,13 @@ class StateManagerNode(Node):
         self._fb_pos              = [0.0] * 8   # latest motor-frame positions from Teensy
         self._leg_captured        = [False] * 4  # FR, FL, RR, RL
         self._positioning_angles  = [0.0] * 8   # IK-frame captured standing positions
+        self._fb_is_sim_jointstate = False
 
         self.create_subscription(Joy,              'joy',          self._joy_callback,    10)
         self.create_subscription(Vector3,          'imu/euler',    self._imu_callback,    10)
         self.create_subscription(Bool,             'estop',        self._estop_callback,  10)
         self.create_subscription(Float32MultiArray,'/joint_states', self._fb_callback,    10)
+        self.create_subscription(JointState, '/joint_states_sim', self._fb_jointstate_callback, 10)
 
         self.state_pub     = self.create_publisher(String,           'robot_state',  10)
         self.gait_pub      = self.create_publisher(Twist,            'gait_command', 10)
@@ -199,8 +211,9 @@ class StateManagerNode(Node):
         if self.state == RobotState.ESTOP:
             start = msg.buttons[self._btn_start] if self._btn_start < len(msg.buttons) else 0
             if start == 1 and self.prev_start == 0:
-                self.get_logger().info('E-STOP cleared — entering POSITIONING.')
-                self._set_state(RobotState.POSITIONING)
+                self.get_logger().info('E-STOP cleared — entering STANDING at NEUTRAL_ANGLES.')
+                self._set_state(RobotState.STANDING)
+                self._publish_joint_angles(NEUTRAL_ANGLES)
             self.prev_start = start
 
             # B button triggers self-righting from fallen position
@@ -231,6 +244,17 @@ class StateManagerNode(Node):
                 self._confirm_positioning()
             self.prev_start = start
             return
+        
+
+        if self.state == RobotState.STANDING:
+            start = msg.buttons[self._btn_start] if self._btn_start < len(msg.buttons) else 0
+            if start == 1 and self.prev_start == 0:
+                self.get_logger().info(
+                    'Entering POSITIONING from neutral stand. '
+                    'Capture legs with A/B/X/Y, then press Start again to confirm.'
+                )
+                self._set_state(RobotState.POSITIONING)
+            self.prev_start = start
 
         a = msg.buttons[self._btn_a] if self._btn_a < len(msg.buttons) else 0
         if a == 1 and self.prev_a == 0:
@@ -334,15 +358,57 @@ class StateManagerNode(Node):
         """Track latest motor-frame positions from Teensy feedback."""
         if len(msg.data) >= 8:
             self._fb_pos = list(msg.data[0:8])
+            self._fb_is_sim_jointstate = False
+            
+    def _fb_jointstate_callback(self, msg: JointState):
+        """Track latest sim joint positions from joint_state_broadcaster."""
+        if not msg.name or not msg.position:
+            return
 
+        for name, pos in zip(msg.name, msg.position):
+            idx = _SIM_JOINT_INDEX.get(name)
+            if idx is not None:
+                self._fb_pos[idx] = float(pos)
+
+        self._fb_is_sim_jointstate = True
+
+    def _sim_fb_to_internal_angles(self, leg: int, g_sho: float, g_kne: float) -> tuple[float, float]:
+        """Convert sim geometric joint state to internal angle representation.
+
+        sim JointState reports geometric joint angles:
+          g_sho = shoulder geometric angle
+          g_kne = knee geometric angle
+
+        state_manager stores angles in the internal IK/motor-command frame used by
+        _publish_joint_angles(), which then applies JOINT_DIRECTION and publishes
+        motor-frame commands to /joint_angles.
+
+        Belt-coupled knee relation:
+          motor_knee = geometric_knee + geometric_shoulder
+        """
+        d_sho = JOINT_DIRECTION.get((leg, 1), 1)
+        d_kne = JOINT_DIRECTION.get((leg, 2), 1)
+
+        motor_sho = g_sho
+        motor_kne = g_kne + g_sho
+
+        return d_sho * motor_sho, d_kne * motor_kne
+    
     def _capture_leg(self, leg: int):
         """Lock one leg at its current physical position."""
         i = leg * 2
         # fb_pos is in motor frame; convert to IK frame by applying direction
-        d_sho = JOINT_DIRECTION.get((leg, 1), 1)
-        d_kne = JOINT_DIRECTION.get((leg, 2), 1)
-        self._positioning_angles[i]     = d_sho * self._fb_pos[i]
-        self._positioning_angles[i + 1] = d_kne * self._fb_pos[i + 1]
+        if self._fb_is_sim_jointstate:
+            sho, kne = self._sim_fb_to_internal_angles(
+                leg, self._fb_pos[i], self._fb_pos[i + 1]
+            )
+            self._positioning_angles[i]     = sho
+            self._positioning_angles[i + 1] = kne
+        else:
+            d_sho = JOINT_DIRECTION.get((leg, 1), 1)
+            d_kne = JOINT_DIRECTION.get((leg, 2), 1)
+            self._positioning_angles[i]     = d_sho * self._fb_pos[i]
+            self._positioning_angles[i + 1] = d_kne * self._fb_pos[i + 1]
         self._leg_captured[leg] = True
         names = ['FR', 'FL', 'RR', 'RL']
         self.get_logger().info(
@@ -416,10 +482,17 @@ class StateManagerNode(Node):
             for leg in range(4):
                 if not self._leg_captured[leg]:
                     i = leg * 2
-                    d_sho = JOINT_DIRECTION.get((leg, 1), 1)
-                    d_kne = JOINT_DIRECTION.get((leg, 2), 1)
-                    angles[i]     = d_sho * self._fb_pos[i]
-                    angles[i + 1] = d_kne * self._fb_pos[i + 1]
+                    if self._fb_is_sim_jointstate:
+                        sho, kne = self._sim_fb_to_internal_angles(
+                            leg, self._fb_pos[i], self._fb_pos[i + 1]
+                        )
+                        angles[i]     = sho
+                        angles[i + 1] = kne
+                    else:
+                        d_sho = JOINT_DIRECTION.get((leg, 1), 1)
+                        d_kne = JOINT_DIRECTION.get((leg, 2), 1)
+                        angles[i]     = d_sho * self._fb_pos[i]
+                        angles[i + 1] = d_kne * self._fb_pos[i + 1]
             self._publish_joint_angles(angles)
         elif self.state == RobotState.DEEP_SITTING:
             elapsed = time.time() - self._deep_sit_ramp_start

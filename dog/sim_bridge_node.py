@@ -114,6 +114,14 @@ class SimBridgeNode(Node):
             10,
         )
 
+        # Publish sim joint feedback in a separate topic so state_manager can
+        # track live positions without colliding with the hardware /joint_states type.
+        self._joint_state_sim_pub = self.create_publisher(
+            JointState,
+            '/joint_states_sim',
+            10,
+        )
+
         # Last received joint command — republished at fixed rate so the
         # Gazebo controller catches it even if it activates after the command
         # was first sent (state_manager only publishes on state transitions).
@@ -140,6 +148,13 @@ class SimBridgeNode(Node):
             Empty,
             '/sim_reset',
             self._sim_reset_cb,
+            10,
+        )
+
+        self.create_subscription(
+            JointState,
+            '/joint_states',
+            self._joint_states_cb,
             10,
         )
 
@@ -220,6 +235,10 @@ class SimBridgeNode(Node):
         euler.y = pitch_deg
         euler.z = 0.0  # yaw not used by state_manager fall-detection
         self._euler_pub.publish(euler)
+    
+    def _joint_states_cb(self, msg: JointState):
+        """Republish Gazebo joint states on /joint_states_sim for state_manager."""
+        self._joint_state_sim_pub.publish(msg)
 
 
 def main(args=None):
