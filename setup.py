@@ -48,6 +48,7 @@ setup(
             'autonomous_bridge_node = dog.autonomous_bridge_node:main',
             'torque_monitor_node    = dog.torque_monitor_node:main',
             'step_test_node     = dog.step_test_node:main',
+            'step_test_node_claude     = dog.step_test_node_claude:main',
         ],
     },
 )

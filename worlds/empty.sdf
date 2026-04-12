@@ -21,6 +21,13 @@ Used by dog_launch.py when sim:=true.
             name="ignition::gazebo::systems::Sensors">
       <render_engine>ogre</render_engine>
     </plugin>
+    <plugin filename="ignition-gazebo-sensors-system"
+            name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre</render_engine>
+    </plugin>
+    <!-- Required for IMU sensor type to publish Ignition topics -->
+    <plugin filename="ignition-gazebo-imu-system"
+            name="ignition::gazebo::systems::Imu"/>
 
     <!-- Gravity -->
     <gravity>0 0 -9.81</gravity>

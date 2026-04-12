@@ -25,15 +25,15 @@ Edit this file to match your physical build dimensions.
 """
 
 HIP_LENGTH    =   0.0   # 8DOF model: shoulder joints mount directly to base_link
-UPPER_LENGTH  = 240.0   # CAD-derived, start with symmetric upper/lower lengths
+UPPER_LENGTH  = 218.25   # CAD-derived, start with symmetric upper/lower lengths
 LOWER_LENGTH  = 240.0   # from URDF lower joint pivot offset ≈ 240.26 mm
 
 BODY_LENGTH   = 648.0   # shoulder pivot x: +0.324 to -0.324 m
 BODY_WIDTH    = 233.0   # shoulder pivot y: +0.1165 to -0.1165 m
 
-STAND_HEIGHT  = 395.0   # conservative first estimate for 0.60 / -0.60 neutral
+STAND_HEIGHT  = 396.2   # conservative first estimate for 0.60 / -0.60 neutral
 STEP_HEIGHT   =  70.0   # reduced from old robot
-STEP_LENGTH   =  60.0   # reduced to avoid shuffling / overreach
+STEP_LENGTH   =  200.0  # reduced to avoid shuffling / overreach
 STEP_DURATION =   0.45  # slightly slower first pass
 
 # ─────────────────────────────────────────────
@@ -138,17 +138,17 @@ JOINT_OFFSETS = {
     (3, 1): 0.0, (3, 2): 0.0,   # RL shoulder, knee
 }
 
-# ─────────────────────────────────────────────
-# NEUTRAL STANDING ANGLES  (radians, motor frame)
-# Computed from IK at (foot_x=0, foot_y=0, foot_z=STAND_HEIGHT).
-# Hip motors removed (8DOF) — only shoulder and knee.
-#
-# Belt-drive coupling: knee motor = shoulder_ik + knee_ik (body-frame knee).
-#   shoulder_ik = +35.02°, knee_ik = -70.04°, coupled = -35.02°
-#   (UPPER=320 mm, LOWER=320 mm, HIP=130 mm, STAND_HEIGHT=540 mm)
-# ─────────────────────────────────────────────
+# NEUTRAL_ANGLES — REAL-ROBOT MOTOR FRAME (CAN bus convention)
+# These are the belt-drive motor encoder values at neutral stance.
+#   shoulder: same as IK shoulder angle (no coupling on shoulder).
+#   knee:     body-frame absolute angle of lower leg = shoulder + knee_geometric.
+#             motor_knee = shoulder_ik + knee_ik_geometric
+# For Gazebo / ign_ros2_control (URDF revolute convention):
+#   knee_gazebo = motor_knee - shoulder = NEUTRAL_ANGLES[knee] - NEUTRAL_ANGLES[shoulder]
+#               = -0.60 - 0.60 = -1.20 rad  (matches xacro initial -1.2224)
+# Do NOT publish NEUTRAL_ANGLES[knee] directly to the Gazebo controller.
 NEUTRAL_ANGLES = [
-     0.60, -0.60,   # FR: shoulder, knee
+     0.60, -0.60,   # FR: shoulder (motor), knee (motor-frame, body absolute)
      0.60, -0.60,   # FL
      0.60, -0.60,   # RR
      0.60, -0.60,   # RL

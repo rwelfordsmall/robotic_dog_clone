@@ -1,37 +1,30 @@
 <?xml version="1.0"?>
-<!--
-dog.urdf.xacro
-==============
-Phase 1 migration base for robotic_dog_clone using the 8-DOF CAD morphology
-from robotic_dog_8dof_urdf, while preserving the clone-side ROS 2 stack.
-
-Preserved clone-side contracts:
-  - robot name: dog
-  - base frame: base_link
-  - IMU frame:  imu_link
-  - LiDAR frame: lidar_link
-  - shoulder/knee joint names used by gait_node and sim_bridge_node
-  - Gazebo sensor plugins
-  - ros2_control embedding
-
-Intentional Phase 1 choices:
-  - No base_footprint frame adopted
-  - No hip joints in the active morphology
-  - LiDAR kept level (rpy = 0 0 0) to preserve planar scan assumption
--->
-
 <robot name="dog" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!-- ──────────────────────────────────────────────────────────────
-       Materials
+       Materials — Virginia Tech brand colors
+         Chicago Maroon  #861F41  → upper legs
+         Burnt Orange    #E5751F  → lower legs
+         Hokie Stone     #75787B  → base / body
   ────────────────────────────────────────────────────────────── -->
   <material name="dark_grey">
     <color rgba="0.20 0.20 0.20 1.0"/>
   </material>
 
+  <material name="hokie_stone">
+    <color rgba="0.459 0.471 0.482 1.0"/>
+  </material>
+
+  <material name="chicago_maroon">
+    <color rgba="0.525 0.122 0.255 1.0"/>
+  </material>
+
+  <material name="burnt_orange">
+    <color rgba="0.898 0.459 0.122 1.0"/>
+  </material>
+
   <!-- ──────────────────────────────────────────────────────────────
-       Base link — migrated from robotic_dog_8dof_urdf/base_link
-       Name preserved as base_link for clone stack compatibility.
+       Base link
   ────────────────────────────────────────────────────────────── -->
   <link name="base_link">
     <inertial>
@@ -50,6 +43,7 @@ Intentional Phase 1 choices:
       <geometry>
         <mesh filename="file://$(find dog)/urdf/meshes/base_link.STL"/>
       </geometry>
+      <material name="hokie_stone"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -59,16 +53,23 @@ Intentional Phase 1 choices:
     </collision>
   </link>
 
-  <!-- IMU frame preserved for clone-side IMU topics / TF -->
-  <link name="imu_link"/>
+  <!-- IMU frame -->
+  <link name="imu_link">
+    <inertial>
+      <mass value="0.001"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0"
+              iyy="1e-6" iyz="0"
+              izz="1e-6"/>
+    </inertial>
+  </link>
   <joint name="imu_joint" type="fixed">
     <parent link="base_link"/>
     <child  link="imu_link"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
-  <!-- LiDAR frame preserved for clone-side SLAM/Nav2 assumptions.
-       CAD translation kept; pitch intentionally flattened to zero. -->
+  <!-- LiDAR frame -->
   <link name="lidar_link">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -99,7 +100,7 @@ Intentional Phase 1 choices:
     <origin xyz="0.284282580961245 9.01880488845888E-05 0.0962574459982149" rpy="0 0 0"/>
   </joint>
 
-  <!-- Camera frame imported from CAD model for future use -->
+  <!-- Camera frame -->
   <link name="camera_link"/>
   <joint name="camera_joint" type="fixed">
     <parent link="base_link"/>
@@ -108,7 +109,7 @@ Intentional Phase 1 choices:
   </joint>
 
   <!-- ──────────────────────────────────────────────────────────────
-       Gazebo: Hokuyo-style lidar sensor (simulation only)
+       Gazebo: Hokuyo-style lidar sensor
   ────────────────────────────────────────────────────────────── -->
   <gazebo reference="lidar_link">
     <sensor name="hokuyo_lidar" type="lidar">
@@ -141,12 +142,8 @@ Intentional Phase 1 choices:
 
   <!-- ──────────────────────────────────────────────────────────────
        8-DOF leg macro
-       Clone semantic names preserved:
-         fr, fl, rr, rl
-       CAD morphology imported:
-         - one shoulder joint from base_link to upper link
-         - one knee joint from upper link to lower link
-         - axis = 0 1 0 for all active joints
+       Upper leg → Chicago Maroon
+       Lower leg → Burnt Orange
   ────────────────────────────────────────────────────────────── -->
   <xacro:macro name="cad_leg" params="
       name
@@ -186,6 +183,7 @@ Intentional Phase 1 choices:
         <geometry>
           <mesh filename="file://$(find dog)/urdf/meshes/${upper_mesh}"/>
         </geometry>
+        <material name="chicago_maroon"/>
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -218,6 +216,7 @@ Intentional Phase 1 choices:
         <geometry>
           <mesh filename="file://$(find dog)/urdf/meshes/${lower_mesh}"/>
         </geometry>
+        <material name="burnt_orange"/>
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -334,11 +333,7 @@ Intentional Phase 1 choices:
     lower_izz="1.77307368033845E-05"/>
 
   <!-- ──────────────────────────────────────────────────────────────
-       ros2_control hardware interface (kept in-file for clone stack)
-       Active joints only: 8DOF shoulder + knee
-       Initial values chosen to match current clone neutral motor model:
-         shoulder ≈ +0.6112
-         geometric knee ≈ -1.2224
+       ros2_control hardware interface
   ────────────────────────────────────────────────────────────── -->
   <ros2_control name="GazeboSimSystem" type="system">
     <hardware>
@@ -390,7 +385,7 @@ Intentional Phase 1 choices:
     </joint>
   </ros2_control>
 
-  <!-- ign_ros2_control: starts controller_manager inside Gazebo -->
+  <!-- ign_ros2_control plugin -->
   <gazebo>
     <plugin filename="ign_ros2_control-system"
             name="gz_ros2_control::GazeboSimROS2ControlPlugin">

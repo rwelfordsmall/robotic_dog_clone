@@ -40,5 +40,14 @@ joint_group_position_controller:
     state_interfaces:
       - position
       - velocity
-    open_loop_control: true
+    open_loop_control: false
     allow_nonzero_velocity_at_trajectory_end: true
+    gains:
+      fr_shoulder_joint: {p: 200.0, i: 0.0, d: 5.0}
+      fr_knee_joint:     {p: 200.0, i: 0.0, d: 5.0}
+      fl_shoulder_joint: {p: 200.0, i: 0.0, d: 5.0}
+      fl_knee_joint:     {p: 200.0, i: 0.0, d: 5.0}
+      rr_shoulder_joint: {p: 200.0, i: 0.0, d: 5.0}
+      rr_knee_joint:     {p: 200.0, i: 0.0, d: 5.0}
+      rl_shoulder_joint: {p: 200.0, i: 0.0, d: 5.0}
+      rl_knee_joint:     {p: 200.0, i: 0.0, d: 5.0}

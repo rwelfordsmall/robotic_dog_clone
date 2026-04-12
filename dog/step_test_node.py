@@ -60,16 +60,25 @@ def run_sequence(node: StepTestNode):
     neutral = list(NEUTRAL_ANGLES)
     base = list(neutral)
 
-    # Slow crawl order
-    leg_order = [0, 3, 1, 2]
+    # Diagonal-pair crawl:
+    #   pair A = FR -> RL
+    #   body advance
+    #   pair B = FL -> RR
+    #   body advance
+    pair_a = [0, 3]   # FR, RL
+    pair_b = [1, 2]   # FL, RR
     names = ['FR', 'FL', 'RR', 'RL']
 
-    opposite_side_support = {
-        0: [1, 3],  # lift FR -> bias FL, RL
-        1: [0, 2],  # lift FL -> bias FR, RR
-        2: [1, 3],  # lift RR -> bias FL, RL
-        3: [0, 2],  # lift RL -> bias FR, RR
-    }
+    # Slightly stronger support bias than before
+    support_shift = (0.53, -0.74)
+    center_support = (0.60, -0.64)
+
+    lift_pose  = (0.34, -1.16)
+    swing_pose = (-0.04, -1.02)
+    place_pose = (0.14, -0.86)
+
+    # Small body-catch-up pose applied after each diagonal pair
+    body_advance_pose = (0.44, -0.72)
 
     def set_leg(pose_base, leg, shoulder, knee):
         out = list(pose_base)
@@ -86,50 +95,94 @@ def run_sequence(node: StepTestNode):
             out[i + 1] = clamp(knee)
         return out
 
-    node.get_logger().info('Holding neutral before forward lean-step test')
+    def step_one_leg(current_base, leg):
+        """Lift, swing, place one leg while biasing load to the other three."""
+        support_legs = [i for i in range(4) if i != leg]
+
+        # 1) Pre-shift weight to support legs
+        shifted = list(current_base)
+        shifted = set_many(shifted, support_legs, *support_shift)
+        shifted = set_leg(shifted, leg, 0.62, -0.58)
+        node.send(shifted, hold_s=1.2)
+
+        # 2) Lift target leg
+        lifted = list(shifted)
+        lifted = set_leg(lifted, leg, *lift_pose)
+        node.send(lifted, hold_s=1.0)
+
+        # 3) Swing target leg forward
+        swung = list(lifted)
+        swung = set_leg(swung, leg, *swing_pose)
+        node.send(swung, hold_s=1.2)
+
+        # 4) Place target leg down forward
+        placed = list(current_base)
+        placed = set_leg(placed, leg, *place_pose)
+        node.send(placed, hold_s=1.2)
+
+        return list(placed)
+
+    def body_advance(current_base):
+        """
+        Try to move the body forward relative to planted feet.
+
+        The idea is:
+        - keep the most recently advanced feet farther forward
+        - pull the support pattern slightly backward under the body
+        - rely on planted contact to translate the chassis forward
+
+        This is still open-loop, so it will never be perfect, but it should be
+        more directional than the previous symmetric catch-up phase.
+        """
+        advanced = list(current_base)
+
+        for leg in range(4):
+            i = leg * 2
+
+            # Only pull back legs that are still "behind" the newly placed footholds.
+            # Legs already forward stay mostly where they are.
+            if advanced[i] > 0.20:
+                # keep forward-placed leg more forward
+                advanced[i] = clamp(advanced[i] - 0.04)
+                advanced[i + 1] = clamp(-0.82)
+            else:
+                # pull support pattern backward a bit more aggressively
+                advanced[i] = clamp(body_advance_pose[0])
+                advanced[i + 1] = clamp(body_advance_pose[1])
+
+        node.send(advanced, hold_s=1.5)
+        return list(advanced)
+
+    node.get_logger().info('Holding neutral before diagonal-pair crawl test')
     node.send(base, hold_s=1.0)
 
     for cycle in range(2):
-        node.get_logger().info(f'Forward lean-step cycle {cycle + 1}/2')
+        node.get_logger().info(f'Diagonal-pair crawl cycle {cycle + 1}/2')
 
-        for leg in leg_order:
-            node.get_logger().info(f'Stepping {names[leg]}')
-            support_legs = opposite_side_support[leg]
-            other_legs = [i for i in range(4) if i != leg and i not in support_legs]
+        # Pair A: FR -> RL
+        for leg in pair_a:
+            node.get_logger().info(f'Step {names[leg]}')
+            base = step_one_leg(base, leg)
 
-            # 1) Mild weight shift only
-            shifted = list(base)
-            shifted = set_many(shifted, support_legs, shoulder=0.55, knee=-0.72)
-            shifted = set_many(shifted, other_legs,   shoulder=0.60, knee=-0.64)
-            shifted = set_leg(shifted, leg,           shoulder=0.62, knee=-0.58)
-            node.send(shifted, hold_s=0.7)
+        # Body catch-up phase
+        node.get_logger().info('Body advance after FR/RL')
+        base = body_advance(base)
 
-            # 2) Lift target leg a little more
-            lifted = list(shifted)
-            lifted = set_leg(lifted, leg, shoulder=0.36, knee=-1.12)
-            node.send(lifted, hold_s=0.7)
+        # Pair B: FL -> RR
+        for leg in pair_b:
+            node.get_logger().info(f'Step {names[leg]}')
+            base = step_one_leg(base, leg)
 
-            # 3) Swing clearly forward while lifted
-            swung = list(lifted)
-            swung = set_leg(swung, leg, shoulder=0.00, knee=-1.00)
-            node.send(swung, hold_s=0.8)
+        # Body catch-up phase
+        node.get_logger().info('Body advance after FL/RR')
+        base = body_advance(base)
 
-            # 4) Place it down forward and KEEP that forward placement
-            placed = list(base)
-            placed = set_leg(placed, leg, shoulder=0.18, knee=-0.84)
-            node.send(placed, hold_s=0.9)
+        # Brief settle in the progressed stance
+        settled = set_many(base, [0, 1, 2, 3], *center_support)
+        node.send(settled, hold_s=1.5)
+        base = list(settled)
 
-            # 5) Small support re-bias, but do not drag the moved leg back to neutral
-            advanced = list(placed)
-            advanced = set_many(advanced, support_legs, shoulder=0.56, knee=-0.70)
-            advanced = set_many(advanced, other_legs,   shoulder=0.60, knee=-0.64)
-            advanced = set_leg(advanced, leg, shoulder=0.18, knee=-0.84)
-            node.send(advanced, hold_s=0.9)
-
-            # Update base so the robot keeps the newly advanced leg position
-            base = list(advanced)
-
-    node.get_logger().info('Forward lean-step test complete; settling to neutral')
+    node.get_logger().info('Diagonal-pair crawl test complete; settling to neutral')
     node.send(list(NEUTRAL_ANGLES), hold_s=1.0)
 
 

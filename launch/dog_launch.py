@@ -206,7 +206,7 @@ def generate_launch_description():
                         arguments=[
                             '-name', 'dog',
                             '-topic', 'robot_description',
-                            '-z', '0.65',
+                            '-z', '0.47',
                         ],
                         output='screen',
                     ),
