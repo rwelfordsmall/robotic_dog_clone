@@ -113,6 +113,24 @@ def _ik_motor_frame(x_fwd: float, z_down: float) -> tuple[float, float]:
     motor_knee = shoulder + knee_geo             # apply belt-drive coupling
     return shoulder, motor_knee
 
+# Cartesian diagnostic points for one-leg X sweep
+X_REAR = -0.050   # -50 mm
+X_MID  =  0.000   #   0 mm
+X_FWD  =  0.050   # +50 mm
+
+_SHO_REAR, _KNE_REAR = _ik_motor_frame(X_REAR, Z_STAND)
+_SHO_MID,  _KNE_MID  = _ik_motor_frame(X_MID,  Z_STAND)
+_SHO_FWD,  _KNE_FWD  = _ik_motor_frame(X_FWD,  Z_STAND)
+
+def _fr_only_pose(fr_sho: float, fr_kne: float) -> list[float]:
+    # Keep all other legs at neutral
+    return [
+        _clamp(fr_sho), _clamp(fr_kne),             # FR
+        NEUTRAL_ANGLES[2], NEUTRAL_ANGLES[3],       # FL
+        NEUTRAL_ANGLES[4], NEUTRAL_ANGLES[5],       # RR
+        NEUTRAL_ANGLES[6], NEUTRAL_ANGLES[7],       # RL
+    ]
+
 def _make_full_pose(
     sho: tuple[float, float, float, float],
     kne: tuple[float, float, float, float],

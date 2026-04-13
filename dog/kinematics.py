@@ -96,7 +96,7 @@ def solve_leg_ik(foot_x: float, foot_y: float, foot_z: float,
               (2.0 * UPPER_LENGTH * reach)
     cos_sho = clamp(cos_sho, -1.0, 1.0)
     alpha = math.degrees(math.acos(cos_sho))
-    beta  = -math.degrees(math.atan2(foot_x, vertical_offset))
+    beta  = math.degrees(math.atan2(foot_x, vertical_offset))
     shoulder_angle = alpha + beta
 
     return hip_angle, shoulder_angle, knee_angle
