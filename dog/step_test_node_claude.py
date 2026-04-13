@@ -32,6 +32,13 @@ from dog.robot_config import (
     NEUTRAL_ANGLES,  # see NOTE below about frame
 )
 
+from dog.kinematics import (
+    ik_sagittal_geometric,
+    motor_from_geometric,
+    fk_sagittal_geometric,
+    geometric_from_motor,
+)
+
 # ── Unit conversion ───────────────────────────────────────────────────────────
 # robot_config stores lengths in mm; all IK math here uses metres.
 L_U = UPPER_LENGTH / 1000.0   # upper leg length, metres
@@ -82,45 +89,54 @@ T_PLANT    = 1.5   # place and re-load hold
 # → foot at z≈438mm, 43mm lower than intended, legs nearly straight → collapse.
 # ─────────────────────────────────────────────────────────────────────────────
 
+def describe_motor_pose(label: str, shoulder_motor: float, knee_motor: float, leg_index: int = FR):
+    shoulder_deg, knee_deg = geometric_from_motor(shoulder_motor, knee_motor, leg_index)
+    x_mm, z_mm = fk_sagittal_geometric(shoulder_deg, knee_deg)
+    print(
+        f"{label}: motor=({shoulder_motor:.3f}, {knee_motor:.3f}) "
+        f"geo=({shoulder_deg:.2f} deg, {knee_deg:.2f} deg) "
+        f"fk=({x_mm:.1f} mm, {z_mm:.1f} mm)"
+    )
 
 def _clamp(angle: float) -> float:
     """Clamp a joint angle to the hardware limits defined in robot_config.py."""
     return max(JOINT_ANGLE_MIN, min(JOINT_ANGLE_MAX, angle))
 
 
-def _ik_motor_frame(x_fwd: float, z_down: float) -> tuple[float, float]:
+def _ik_motor_frame(x_fwd_m: float, z_down_m: float) -> tuple[float, float]:
     """
-    Returns (shoulder_cmd, knee_motor_cmd) in MOTOR FRAME —
-    i.e., what to publish to /joint_angles so sim_bridge_node
-    correctly decouples it before forwarding to Gazebo.
+    # Returns (shoulder_cmd, knee_motor_cmd) in MOTOR FRAME —
+    # i.e., what to publish to /joint_angles so sim_bridge_node
+    # correctly decouples it before forwarding to Gazebo.
 
-    motor_knee = shoulder + knee_geometric  (belt-drive coupling)
-    sim_bridge_node then does: geo_knee = motor_knee - shoulder
-    which recovers knee_geometric for the URDF controller.
-    """
-    d_sq = x_fwd**2 + z_down**2
-    d = math.sqrt(d_sq)
-    cos_phi = (d_sq - L_U**2 - L_L**2) / (2.0 * L_U * L_L)
-    cos_phi = max(-1.0, min(1.0, cos_phi))
-    phi_mag = math.acos(cos_phi)
-    knee_geo = -phi_mag                          # geometric knee (URDF-relative)
+    # motor_knee = shoulder + knee_geometric  (belt-drive coupling)
+    # sim_bridge_node then does: geo_knee = motor_knee - shoulder
+    # which recovers knee_geometric for the URDF controller.
+    # """
+    # d_sq = x_fwd**2 + z_down**2
+    # d = math.sqrt(d_sq)
+    # cos_phi = (d_sq - L_U**2 - L_L**2) / (2.0 * L_U * L_L)
+    # cos_phi = max(-1.0, min(1.0, cos_phi))
+    # phi_mag = math.acos(cos_phi)
+    # knee_geo = -phi_mag                          # geometric knee (URDF-relative)
 
-    gamma = math.atan2(x_fwd, z_down)
-    sin_psi = L_L * math.sin(phi_mag) / d
-    psi = math.asin(max(-1.0, min(1.0, sin_psi)))
-    shoulder = gamma + psi
+    # gamma = math.atan2(x_fwd, z_down)
+    # sin_psi = L_L * math.sin(phi_mag) / d
+    # psi = math.asin(max(-1.0, min(1.0, sin_psi)))
+    # shoulder = gamma + psi
 
-    motor_knee = shoulder + knee_geo             # apply belt-drive coupling
-    return shoulder, motor_knee
+    # motor_knee = shoulder + knee_geo             # apply belt-drive coupling
+    # return shoulder, motor_knee
+    x_mm = x_fwd_m * 1000.0
+    z_mm = z_down_m * 1000.0
+    shoulder_deg, knee_deg = ik_sagittal_geometric(x_mm, z_mm)
+    shoulder_rad, knee_motor_rad = motor_from_geometric(shoulder_deg, knee_deg, FR)
+    return shoulder_rad, knee_motor_rad
 
 # Cartesian diagnostic points for one-leg X sweep
 X_REAR = -0.050   # -50 mm
 X_MID  =  0.000   #   0 mm
 X_FWD  =  0.050   # +50 mm
-
-_SHO_REAR, _KNE_REAR = _ik_motor_frame(X_REAR, Z_STAND)
-_SHO_MID,  _KNE_MID  = _ik_motor_frame(X_MID,  Z_STAND)
-_SHO_FWD,  _KNE_FWD  = _ik_motor_frame(X_FWD,  Z_STAND)
 
 def _fr_only_pose(fr_sho: float, fr_kne: float) -> list[float]:
     # Keep all other legs at neutral
@@ -160,10 +176,10 @@ _SHO_N, _KNE_N = _ik_motor_frame(0.0, Z_STAND)
 _SHO_L, _KNE_L = _ik_motor_frame(0.0, Z_LIFT)
 
 # Forward placement: foot is X_STEP = STEP_LENGTH/2 forward of neutral.
-_SHO_FWD, _KNE_FWD = _ik_motor_frame(-X_STEP, Z_STAND)
+_SHO_FWD, _KNE_FWD = _ik_motor_frame(+X_STEP, Z_STAND)
 
 # Precompute the missing pose: foot forward AND high
-_SHO_FWD_HIGH, _KNE_FWD_HIGH = _ik_motor_frame(-X_STEP, Z_LIFT)
+_SHO_FWD_HIGH, _KNE_FWD_HIGH = _ik_motor_frame(+X_STEP, Z_LIFT)
 
 # Rearward position (used when a support leg must push back to drive body forward).
 _SHO_BCK, _KNE_BCK = _ik_motor_frame(-X_STEP, Z_STAND)

@@ -102,6 +102,21 @@ def generate_launch_description():
         default_value='false',
         description='Set true to launch Nav2 + SLAM Toolbox + sensor nodes',
     )
+    validate_ik_arg = DeclareLaunchArgument(
+        'validate_ik',
+        default_value='false',
+        description='Set true to launch Gazebo + bridge + controllers + IK validation node only',
+    )
+    validate_gait_arg = DeclareLaunchArgument(
+        'validate_gait',
+        default_value='false',
+        description='Reserved gait-validation mode flag (currently keeps normal gait stack)',
+    )
+    debug_joint_conversion_arg = DeclareLaunchArgument(
+        'debug_joint_conversion',
+        default_value='false',
+        description='Enable detailed motor->geometric debug logging in sim_bridge_node',
+    )
 
     serial_port = LaunchConfiguration('serial_port')
     lidar_port  = LaunchConfiguration('lidar_port')
@@ -109,6 +124,9 @@ def generate_launch_description():
     sim         = LaunchConfiguration('sim')
     autonomous  = LaunchConfiguration('autonomous')
     world       = LaunchConfiguration('world')
+    validate_ik = LaunchConfiguration('validate_ik')
+    validate_gait = LaunchConfiguration('validate_gait')
+    debug_joint_conversion = LaunchConfiguration('debug_joint_conversion')
 
     robot_description_content = ParameterValue(
         Command(['xacro ', xacro_file]), value_type=str
@@ -125,6 +143,7 @@ def generate_launch_description():
     is_sim_auto = IfCondition(PythonExpression(
         ["'", sim, "' == 'true'  and '", autonomous, "' == 'true'"]
     ))
+    is_not_validate_ik = UnlessCondition(validate_ik)
 
     # ═══════════════════════════════════════════════════════════════
     # HARDWARE-ONLY  (sim:=false)
@@ -191,7 +210,10 @@ def generate_launch_description():
                 package='dog',
                 executable='sim_bridge_node',
                 name='sim_bridge_node',
-                parameters=[{'use_sim_time': True}],
+                parameters=[{
+                    'use_sim_time': True,
+                    'debug_joint_conversion': debug_joint_conversion,
+                }],
                 output='screen',
             ),
 
@@ -423,6 +445,7 @@ def generate_launch_description():
         name='state_manager',
         parameters=[robot_params, {'controller_type': ctrl}],
         output='screen',
+        condition=is_not_validate_ik,
     )
 
     gait_node = Node(
@@ -431,8 +454,17 @@ def generate_launch_description():
         name='gait_node',
         parameters=[robot_params],
         output='screen',
+        condition=is_not_validate_ik,
     )
 
+    ik_validation_node = Node(
+        package='dog',
+        executable='step_test_node_claude',
+        name='ik_validation_node',
+        output='screen',
+        condition=IfCondition(validate_ik),
+    )
+    
     torque_monitor_node = Node(
         package='dog',
         executable='torque_monitor_node',
@@ -447,6 +479,9 @@ def generate_launch_description():
         sim_arg,
         world_arg,
         autonomous_arg,
+        validate_ik_arg,
+        validate_gait_arg,
+        debug_joint_conversion_arg,
         micro_ros_agent,
         sim_group,
         sim_auto_group,
@@ -457,5 +492,6 @@ def generate_launch_description():
         controller_node,
         state_manager,
         gait_node,
+        ik_validation_node,
         torque_monitor_node,
     ])

@@ -1,6 +1,20 @@
 <?xml version="1.0"?>
 <robot name="dog" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!--
+    dog.urdf.xacro
+    ──────────────────────────────────────────────────────────────
 
+    This file is the authoritative source for simulated robot geometry in Gazebo.
+
+    Important distinctions:
+    - The URDF defines the real simulated joint layout, joint axes, and link origins.
+    - The active Python gait/IK stack currently uses a simplified 8-DOF sagittal model.
+    - If the Python model and observed Gazebo motion disagree, check this file first.
+
+    Joint-space note:
+    - Gazebo / ros2_control consume geometric / URDF joint angles.
+    - The Python /joint_angles topic publishes motor-space commands and is decoupled by sim_bridge_node.
+  -->
   <!-- ──────────────────────────────────────────────────────────────
        Materials — Virginia Tech brand colors
          Chicago Maroon  #861F41  → upper legs
@@ -159,7 +173,14 @@
       lower_com_xyz
       lower_mass
       lower_ixx lower_ixy lower_ixz lower_iyy lower_iyz lower_izz">
-
+    <!--
+      Shoulder joint:
+      - This is the upper-leg pitch joint used by the active 8-DOF control path.
+      - Joint axis is defined in URDF/geometric space.
+      - Positive rotation direction is determined by axis + right-hand rule.
+      - The Python IK/gait stack must match the observed Cartesian effect of this joint.
+    -->
+    <!-- axis="0 1 0" means positive rotation is about +Y in the parent frame -->
     <joint name="${name}_shoulder_joint" type="revolute">
       <parent link="base_link"/>
       <child  link="${name}_upper_leg_link"/>
@@ -193,6 +214,14 @@
       </collision>
     </link>
 
+    <!--
+      Knee joint:
+      - This is the geometric / URDF knee angle used by Gazebo controllers.
+      - In the real robot control stack, motor-space knee commands are belt-coupled:
+          knee_motor = shoulder_geometric + knee_geometric
+      - sim_bridge_node converts motor-space commands back to this URDF knee angle.
+    -->
+    <!-- axis="0 1 0" means positive rotation is about +Y in the parent frame -->
     <joint name="${name}_knee_joint" type="revolute">
       <parent link="${name}_upper_leg_link"/>
       <child  link="${name}_lower_leg_link"/>
@@ -228,6 +257,15 @@
 
   </xacro:macro>
 
+  <!--
+    Control-model note:
+    The active Python gait/IK stack currently approximates each leg as a sagittal 2-link mechanism.
+    This URDF may include lateral offsets and geometry details not represented in that simplified model.
+  -->
+  <!-- Legs:
+     shoulder origin defines the leg root relative to base_link
+     knee origin includes the modeled lateral and vertical offset of the lower-leg pivot
+  -->
   <!-- Front Right = CAD leg2 -->
   <xacro:cad_leg
     name="fr"
@@ -335,6 +373,11 @@
   <!-- ──────────────────────────────────────────────────────────────
        ros2_control hardware interface
   ────────────────────────────────────────────────────────────── -->
+  <!--
+    Initial positions below are URDF/geometric joint angles.
+    They should correspond to the intended neutral simulated stance.
+    These are NOT motor-space /joint_angles values.
+  -->
   <ros2_control name="GazeboSimSystem" type="system">
     <hardware>
       <plugin>ign_ros2_control/IgnitionSystem</plugin>

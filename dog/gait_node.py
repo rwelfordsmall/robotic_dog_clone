@@ -1,21 +1,17 @@
 """
 gait_node.py
 ------------
-ROS2 node that runs the gait generator and inverse kinematics.
 
-Subscribed topics:
-  /gait_command   (geometry_msgs/Twist)   — velocity command
-  /body_pose      (geometry_msgs/Vector3) — roll, pitch, yaw
-  /robot_state    (std_msgs/String)       — current robot state
-  /gait_type      (std_msgs/String)       — gait type name
+ROS2 node that runs the active gait generator and inverse kinematics.
 
-Published topics:
-  /joint_angles   (std_msgs/Float32MultiArray)
-    8 motor position commands in RADIANS. Hip motors removed (8DOF).
-    Order: FR_sho, FR_kne,
-           FL_sho, FL_kne,
-           RR_sho, RR_kne,
-           RL_sho, RL_kne
+Published output:
+- /joint_angles: 8 motor-space position commands in radians
+  Order: FR_sho, FR_kne, FL_sho, FL_kne, RR_sho, RR_kne, RL_sho, RL_kne
+
+Active robot mode:
+- 8DOF sagittal gait path
+- forward/reverse stepping supported
+- lateral foot placement is not part of the active end-to-end path
 """
 
 import rclpy
@@ -28,6 +24,7 @@ from dog.kinematics import compute_all_legs
 from dog.state_manager import RobotState
 from dog.robot_config import NEUTRAL_ANGLES
 
+KINEMATIC_MODE = "8dof_sagittal"
 
 CONTROL_RATE_HZ = 50
 
@@ -73,16 +70,21 @@ class GaitNode(Node):
         self.create_timer(1.0 / CONTROL_RATE_HZ, self._control_loop)
 
         self.get_logger().info(f'Gait node running at {CONTROL_RATE_HZ} Hz')
+        self.get_logger().info(f'Kinematic mode: {KINEMATIC_MODE}')
         self._publish_gains(GaitType.STAND)
 
     # ────────────────────────────────────────────────────────────────
     def _cmd_callback(self, msg: Twist):
-        self.vx  = msg.linear.x
-        self.vy  = msg.linear.y
+        # Active 8DOF path uses vx only; vy/yaw are currently accepted for interface
+        # compatibility but not preserved as lateral foot placement.
+        self.vx = msg.linear.x
+        self.vy = msg.linear.y
         self.yaw = msg.angular.z
 
     def _pose_callback(self, msg: Vector3):
-        self.roll  = msg.x
+        # Active path supports pitch-oriented sagittal adjustment.
+        # Roll is currently not preserved through lateral foot placement.
+        self.roll = msg.x
         self.pitch = msg.y
 
     def _gait_type_callback(self, msg: String):
@@ -125,36 +127,73 @@ class GaitNode(Node):
 
     # ────────────────────────────────────────────────────────────────
     def _control_loop(self):
-        if self.robot_state in (RobotState.POSITIONING, RobotState.SITTING,
-                                RobotState.ESTOP, RobotState.IDLE,
-                                RobotState.RIGHTING, RobotState.JUMPING,
-                                RobotState.BACKFLIP):
+        if self.robot_state in (
+            RobotState.POSITIONING,
+            RobotState.SITTING,
+            RobotState.ESTOP,
+            RobotState.IDLE,
+            RobotState.RIGHTING,
+            RobotState.JUMPING,
+            RobotState.BACKFLIP,
+        ):
             return
 
         if self.robot_state == RobotState.STANDING:
-            no_move = (abs(self.vx) < 0.001 and abs(self.vy) < 0.001
-                       and abs(self.yaw) < 0.001)
+            no_move = (
+                abs(self.vx) < 0.001 and 
+                abs(self.vy) < 0.001 and 
+                abs(self.yaw) < 0.001
+                )
             no_tilt = abs(self.roll) < 0.5 and abs(self.pitch) < 0.5
             if no_move and no_tilt:
                 return
 
-        foot_positions = self.gait.update(
-            vx=self.vx, vy=self.vy, yaw=self.yaw,
-            body_roll=self.roll, body_pitch=self.pitch,
-        )
+        self._warn_if_unsupported_motion_requested()
 
-        # Hip is static (8DOF): zero lateral offset so IK geometry is correct
-        foot_positions = [(x, 0.0, z) for x, _, z in foot_positions]
+        if KINEMATIC_MODE == "8dof_sagittal":
+            foot_positions = self.gait.update_sagittal_8dof(
+                vx=self.vx,
+                body_pitch=self.pitch,
+            )
+        else:
+            foot_positions = self.gait.update(
+                vx=self.vx,
+                vy=self.vy,
+                yaw=self.yaw,
+                body_roll=self.roll,
+                body_pitch=self.pitch,
+            )
 
         try:
             angles = compute_all_legs(foot_positions)
         except Exception as e:
-            self.get_logger().error(f'IK failed: {e}')
+            self.get_logger().error(
+                f"IK failed: {e}; requested foot positions={foot_positions}"
+            )
             angles = list(NEUTRAL_ANGLES)
 
         msg = Float32MultiArray()
         msg.data = [float(a) for a in angles]
         self.joint_pub.publish(msg)
+
+    def _warn_if_unsupported_motion_requested(self):
+        if KINEMATIC_MODE != "8dof_sagittal":
+            return
+
+        unsupported = []
+        if abs(self.vy) > 1e-3:
+            unsupported.append(f"vy={self.vy:.3f}")
+        if abs(self.yaw) > 1e-3:
+            unsupported.append(f"yaw={self.yaw:.3f}")
+        if abs(self.roll) > 0.5:
+            unsupported.append(f"roll={self.roll:.2f}")
+
+        if unsupported:
+            self.get_logger().warn(
+                "Ignoring unsupported lateral/roll command inputs in 8DOF sagittal mode: "
+                + ", ".join(unsupported),
+                throttle_duration_sec=2.0,
+            )
 
 
 def main(args=None):

@@ -49,6 +49,7 @@ setup(
             'torque_monitor_node    = dog.torque_monitor_node:main',
             'step_test_node     = dog.step_test_node:main',
             'step_test_node_claude     = dog.step_test_node_claude:main',
+            'ik_validation_node    = dog.ik_validation_node:main',
         ],
     },
 )

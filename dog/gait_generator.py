@@ -1,32 +1,24 @@
 """
 gait_generator.py
 -----------------
-Hierarchical gait control based on the MIT Cheetah algorithm:
 
-  J. Lee, "Hierarchical controller for highly dynamic locomotion utilizing
-  pattern modulation and impedance control," MIT SM Thesis, 2013.
+Stateful gait generator for the active 8-DOF quadruped control path.
 
-Three layers:
+Canonical active mode:
+- sagittal foot motion only
+- X = forward-positive
+- Z = downward-positive leg depth
+- Y is not actively used in the current end-to-end 8-DOF gait path
 
-  1. Gait Pattern Modulator
-     - Assigns per-leg phase signals from a continuous master clock
-     - Phase lags ΔS define gait pattern (trot, gallop, walk, crawl)
-     - T_sw = constant (biological finding: swing duration is speed-invariant)
-     - T_st = 2·L_span / v_d  (scales with commanded speed)
+This module owns:
+- gait timing and phase relationships
+- sagittal stance and swing trajectories
+- optional body-pitch compensation for the active path
 
-  2. Leg Trajectory Generator
-     - Swing phase: 11th-degree Bezier curve (12 control points, Table 3.2)
-     - Stance phase: sinusoidal wave with penetration depth δ
-
-  3. Low-level leg compliance
-     - Virtual impedance gains (Kp_r, Kd_r, Kp_θ, Kd_θ) are exposed for
-       the Teensy impedance controller. Trajectory errors become joint torques
-       via J_polar^T · [Kp·e + Kd·ė] (Eq. 3.17).
-
-Foot positions returned in the HIP frame (mm):
-  X  →  forward
-  Y  →  outward (right-positive, left-negative)
-  Z  ↓  downward (positive = foot lower)
+Important:
+- Configured STEP_LENGTH should match actual generated horizontal sweep.
+- Configured STEP_HEIGHT should match actual generated swing apex.
+- Lateral stride generation is not part of the current active mode.
 """
 
 import math
@@ -182,6 +174,14 @@ def default_foot_positions() -> list[tuple[float, float, float]]:
         (0.0, 0.0, STAND_HEIGHT),  # RL
     ]
 
+def default_foot_positions_sagittal() -> list[tuple[float, float, float]]:
+    """
+    Neutral standing foot positions for the active 8-DOF sagittal gait path.
+
+    Returns four (x, y, z) tuples, with y fixed at 0.0 because lateral foot
+    placement is not part of the current end-to-end control path.
+    """
+    return [(0.0, 0.0, STAND_HEIGHT)] * 4
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main gait generator
@@ -205,7 +205,7 @@ class GaitGenerator:
 
     def __init__(self):
         self.gait_type = GaitType.STAND
-        self.foot_pos  = default_foot_positions()
+        self.foot_pos  = default_foot_positions_sagittal()
 
         # Impedance gains (read-only by external nodes)
         self.kp_radial  = KP_RADIAL
@@ -226,48 +226,123 @@ class GaitGenerator:
         self.gait_type = gait_type
         self._phase_clock = 0.0
         if gait_type == GaitType.STAND:
-            self.foot_pos = default_foot_positions()
+            self.foot_pos = default_foot_positions_sagittal()
 
-    def update(self, vx: float, vy: float, yaw: float,
-               body_roll: float = 0.0, body_pitch: float = 0.0
-               ) -> list[tuple[float, float, float]]:
+    # def update(self, vx: float, vy: float, yaw: float,
+    #            body_roll: float = 0.0, body_pitch: float = 0.0
+    #            ) -> list[tuple[float, float, float]]:
+    #     """
+    #     Compute desired foot-end positions for the current control cycle.
+
+    #     Parameters
+    #     ----------
+    #     vx  : forward velocity command, normalised [-1, 1]
+    #     vy  : lateral velocity command, normalised [-1, 1]
+    #     yaw : yaw rate command, normalised [-1, 1]
+    #     body_roll, body_pitch : body tilt in degrees (from IMU)
+
+    #     Returns
+    #     -------
+    #     List of four (x, y, z) tuples in the hip frame (mm).
+    #     """
+    #     now = time.time()
+    #     dt  = max(now - self._last_time, 1e-4)
+    #     self._last_time = now
+
+    #     if self.gait_type == GaitType.STAND:
+    #         return self._stand_pose(body_roll, body_pitch)
+
+    #     if self.gait_type not in _PHASE_OFFSETS:
+    #         return default_foot_positions_sagittal()
+
+    #     # ── Gait timing parameters ──────────────────────────────────────────
+    #     t_sw  = _T_SW[self.gait_type]
+    #     v_mag = math.hypot(vx, vy)
+
+    #     if v_mag > 0.05:
+    #         # Speed-adaptive stance duration: T_st = 2·L_span / v_d (Eq. 3.1)
+    #         # When strafing, l_span is scaled up by (1 + |dir_y|); the timing
+    #         # formula must use the same scaled span so body speed stays correct.
+    #         lat_frac = abs(vy) / v_mag   # fraction of motion that is lateral
+    #         span_for_timing = self._l_span * (1.0 + lat_frac)
+    #         v_phys_mms = v_mag * MAX_SPEED_MS * 1000.0   # mm/s
+    #         t_st = max(2.0 * span_for_timing / v_phys_mms, t_sw * 0.5)
+    #         # Backward motion needs longer stance to prevent tipping
+    #         if vx < 0.0:
+    #             t_st = max(t_st, t_sw)
+    #     else:
+    #         t_st = _T_ST_SLOW[self.gait_type]
+
+    #     t_stride = t_st + t_sw
+    #     self._t_st = t_st
+
+    #     # ── Advance master clock and wrap within one stride ─────────────────
+    #     self._phase_clock = (self._phase_clock + dt) % t_stride
+
+    #     phase_offsets = _PHASE_OFFSETS[self.gait_type]
+    #     positions = []
+
+    #     for leg in range(4):
+    #         pos = self._leg_position(
+    #             leg, phase_offsets[leg], t_st, t_sw, t_stride, vx, vy, yaw
+    #         )
+    #         positions.append(pos)
+
+    #     return self._apply_body_pose(positions, body_roll, body_pitch)
+
+    def update(
+        self,
+        vx: float,
+        vy: float,
+        yaw: float,
+        body_roll: float = 0.0,
+        body_pitch: float = 0.0,
+    ) -> list[tuple[float, float, float]]:
         """
-        Compute desired foot-end positions for the current control cycle.
+        Backward-compatible entry point.
 
-        Parameters
-        ----------
-        vx  : forward velocity command, normalised [-1, 1]
-        vy  : lateral velocity command, normalised [-1, 1]
-        yaw : yaw rate command, normalised [-1, 1]
-        body_roll, body_pitch : body tilt in degrees (from IMU)
+        The active robot uses sagittal-only 8-DOF gait generation.
+        Lateral and yaw foot-placement inputs are currently ignored here.
+        """
+        return self.update_sagittal_8dof(
+            vx=vx,
+            body_pitch=body_pitch,
+        )
+    
+    def update_sagittal_8dof(
+        self,
+        vx: float,
+        body_pitch: float = 0.0,
+    ) -> list[tuple[float, float, float]]:
+        """
+        Active gait update path for the current 8-DOF robot.
 
-        Returns
-        -------
-        List of four (x, y, z) tuples in the hip frame (mm).
+        Supports:
+        - forward/reverse sagittal stepping
+        - stance/swing timing
+        - optional body-pitch compensation
+
+        Does not support:
+        - lateral stepping
+        - yaw-driven foot placement
+        - roll compensation through lateral foot motion
         """
         now = time.time()
-        dt  = max(now - self._last_time, 1e-4)
+        dt = max(now - self._last_time, 1e-4)
         self._last_time = now
 
         if self.gait_type == GaitType.STAND:
-            return self._stand_pose(body_roll, body_pitch)
+            return self._stand_pose_sagittal(body_pitch)
 
         if self.gait_type not in _PHASE_OFFSETS:
-            return default_foot_positions()
+            return default_foot_positions_sagittal()
 
-        # ── Gait timing parameters ──────────────────────────────────────────
-        t_sw  = _T_SW[self.gait_type]
-        v_mag = math.hypot(vx, vy)
+        t_sw = _T_SW[self.gait_type]
+        v_mag = abs(vx)
 
         if v_mag > 0.05:
-            # Speed-adaptive stance duration: T_st = 2·L_span / v_d (Eq. 3.1)
-            # When strafing, l_span is scaled up by (1 + |dir_y|); the timing
-            # formula must use the same scaled span so body speed stays correct.
-            lat_frac = abs(vy) / v_mag   # fraction of motion that is lateral
-            span_for_timing = self._l_span * (1.0 + lat_frac)
-            v_phys_mms = v_mag * MAX_SPEED_MS * 1000.0   # mm/s
-            t_st = max(2.0 * span_for_timing / v_phys_mms, t_sw * 0.5)
-            # Backward motion needs longer stance to prevent tipping
+            v_phys_mms = v_mag * MAX_SPEED_MS * 1000.0
+            t_st = max(2.0 * self._l_span / v_phys_mms, t_sw * 0.5)
             if vx < 0.0:
                 t_st = max(t_st, t_sw)
         else:
@@ -275,21 +350,22 @@ class GaitGenerator:
 
         t_stride = t_st + t_sw
         self._t_st = t_st
-
-        # ── Advance master clock and wrap within one stride ─────────────────
         self._phase_clock = (self._phase_clock + dt) % t_stride
 
-        phase_offsets = _PHASE_OFFSETS[self.gait_type]
         positions = []
-
-        for leg in range(4):
-            pos = self._leg_position(
-                leg, phase_offsets[leg], t_st, t_sw, t_stride, vx, vy, yaw
+        for leg, ds in enumerate(_PHASE_OFFSETS[self.gait_type]):
+            positions.append(
+                self._leg_position_sagittal(
+                    leg=leg,
+                    ds=ds,
+                    t_st=t_st,
+                    t_sw=t_sw,
+                    t_stride=t_stride,
+                    vx=vx,
+                )
             )
-            positions.append(pos)
 
-        return self._apply_body_pose(positions, body_roll, body_pitch)
-
+        return self._apply_body_pitch_sagittal(positions, body_pitch)
     # ── Gait pattern modulator ────────────────────────────────────────────────
 
     def _leg_position(self, leg: int, ds: float,
@@ -312,23 +388,28 @@ class GaitGenerator:
         # Scale l_span up when strafing: the hip alone has a much shorter
         # lever arm than shoulder+knee, so lateral strides need to be wider
         # to generate the same lateral body displacement per cycle.
-        base_span = self._l_span + yaw * side * self._l_span * 0.4
+        base_span = self._l_span #+ yaw * side * self._l_span
         base_span = max(base_span, 5.0)   # avoid zero/negative span
 
         # Normalised stride direction in the (forward, lateral) plane.
         # Using side * dir_y in trajectory functions ensures all legs push
         # the body in the same world direction when strafing.
-        v_total = math.hypot(vx, vy)
-        if v_total > 0.02:
-            dir_x = vx / v_total
-            dir_y = vy / v_total
+        # v_total = math.hypot(vx, vy)
+        # if v_total > 0.02:
+        #     dir_x = vx / v_total
+        #     dir_y = vy / v_total
+        # else:
+        #     dir_x, dir_y = 1.0, 0.0
+        if abs(vx) > 0.02:
+            dir_x = 1.0 if vx >= 0.0 else -1.0
         else:
-            dir_x, dir_y = 1.0, 0.0
+            dir_x = 1.0
+
+        dir_y = 0.0
 
         # Hip lever arm is shorter than shoulder/knee, so double the stride
         # length when strafing so each step produces the same body displacement.
-        l_span = base_span * (1.0 + abs(dir_y))
-        l_span *= 0.65
+        l_span = base_span# * (1.0 + abs(dir_y))
         
         p0_x = 0.0
         gl = 0.0
@@ -351,6 +432,52 @@ class GaitGenerator:
             s_sw = max(0.0, min(1.0, s_sw))
             return self._swing_trajectory(leg, s_sw, dir_x, dir_y, l_span, p0_x)
 
+    def _leg_position_sagittal(
+        self,
+        leg: int,
+        ds: float,
+        t_st: float,
+        t_sw: float,
+        t_stride: float,
+        vx: float,
+    ) -> tuple[float, float, float]:
+        t_i = (self._phase_clock - ds * t_stride) % t_stride
+
+        is_front = (leg < 2)
+        dir_x = 1.0 if vx >= 0.0 else -1.0
+        l_span = max(self._l_span, 5.0)
+
+        if is_front:
+            delta = _DELTA_FRONT
+            p0_x = 0.0
+            gl = 0.0
+        else:
+            delta = _DELTA_REAR
+            p0_x = 0.0
+            gl = 0.0
+
+        if t_i < t_st:
+            s_st = t_i / t_st
+            return self._stance_trajectory_sagittal(
+                leg=leg,
+                s_st=s_st,
+                dir_x=dir_x,
+                l_span=l_span,
+                delta=delta,
+                p0_x=p0_x,
+                gl=gl,
+            )
+        else:
+            s_sw = (t_i - t_st) / t_sw
+            s_sw = max(0.0, min(1.0, s_sw))
+            return self._swing_trajectory_sagittal(
+                leg=leg,
+                s_sw=s_sw,
+                dir_x=dir_x,
+                l_span=l_span,
+                p0_x=p0_x,
+            )
+        
     # ── Leg trajectory generator ──────────────────────────────────────────────
 
     def _stance_trajectory(self, leg: int, s_st: float, dir_x: float,
@@ -385,6 +512,22 @@ class GaitGenerator:
 
         return foot_x, foot_y, foot_z
 
+    def _stance_trajectory_sagittal(
+        self,
+        leg: int,
+        s_st: float,
+        dir_x: float,
+        l_span: float,
+        delta: float,
+        p0_x: float,
+        gl: float,
+    ) -> tuple[float, float, float]:
+        bx = l_span * (1.0 - 2.0 * s_st)
+        z = STAND_HEIGHT + delta * math.sin(math.pi * s_st)
+        x = bx * dir_x + p0_x
+        y = 0.0
+        return (x, y, z)
+    
     def _swing_trajectory(self, leg: int, s_sw: float, dir_x: float,
                           dir_y: float, l_span: float, p0_x: float
                           ) -> tuple[float, float, float]:
@@ -398,7 +541,7 @@ class GaitGenerator:
         rotated into the 2D (dir_x, dir_y) direction so the swing liftoff
         and touchdown positions match the start/end of the stance sweep.
         """
-        ctrl = _scale_ctrl_pts(l_span, STAND_HEIGHT, STEP_HEIGHT * 2.4)
+        ctrl = _scale_ctrl_pts(l_span, STAND_HEIGHT, STEP_HEIGHT)
         bx, bz = _bezier(ctrl, s_sw)
 
         foot_x = bx * dir_x + p0_x
@@ -406,6 +549,20 @@ class GaitGenerator:
 
         return foot_x, foot_y, bz
 
+    def _swing_trajectory_sagittal(
+        self,
+        leg: int,
+        s_sw: float,
+        dir_x: float,
+        l_span: float,
+        p0_x: float,
+    ) -> tuple[float, float, float]:
+        ctrl = _scale_ctrl_pts(l_span, STAND_HEIGHT, STEP_HEIGHT)
+        bx, z = _bezier(ctrl, s_sw)
+        x = bx * dir_x + p0_x
+        y = 0.0
+        return (x, y, z)
+    
     # ── Body pose adjustment ──────────────────────────────────────────────────
 
     def _stand_pose(self, roll: float, pitch: float
@@ -414,11 +571,15 @@ class GaitGenerator:
         r = math.radians(roll)
         p = math.radians(pitch)
         out = []
-        for x, y, z in default_foot_positions():
+        for x, y, z in default_foot_positions_sagittal():
             dx = z * math.sin(p)
             dz = y * math.sin(r) + x * math.sin(p)
             out.append((x + dx, y, z + dz))
         return out
+
+    def _stand_pose_sagittal(self, body_pitch: float = 0.0) -> list[tuple[float, float, float]]:
+        positions = default_foot_positions_sagittal()
+        return self._apply_body_pitch_sagittal(positions, body_pitch)
 
     def _apply_body_pose(self, positions: list, roll: float, pitch: float
                          ) -> list[tuple[float, float, float]]:
@@ -430,3 +591,34 @@ class GaitGenerator:
             dz = y * math.sin(r) + x * math.sin(p)
             out.append((x, y, z + dz))
         return out
+
+    def _apply_body_pitch_sagittal(
+        self,
+        positions: list[tuple[float, float, float]],
+        body_pitch: float,
+    ) -> list[tuple[float, float, float]]:
+        if abs(body_pitch) < 1e-6:
+            return positions
+
+        pitch_rad = math.radians(body_pitch)
+        adjusted = []
+
+        for leg, (x, y, z) in enumerate(positions):
+            # Simple sagittal pitch compensation:
+            # front legs and rear legs get opposite x/z adjustments.
+            sign = 1.0 if leg < 2 else -1.0
+            x_adj = x + sign * STAND_HEIGHT * math.sin(pitch_rad) * 0.1
+            z_adj = z
+            adjusted.append((x_adj, 0.0, z_adj))
+
+        return adjusted
+
+
+if __name__ == "__main__":
+    gen = GaitGenerator()
+    gen.set_gait(GaitType.TROT)
+
+    for _ in range(5):
+        pos = gen.update_sagittal_8dof(vx=0.3, body_pitch=0.0)
+        print(pos)
+        time.sleep(0.05)

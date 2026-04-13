@@ -1,15 +1,18 @@
 # ros2_controllers.yaml
 # ----------------------
-# Controller configuration for Gazebo Fortress simulation via ign_ros2_control.
+# Active controller configuration for the migrated 8-DOF robot.
 #
-# joint_state_broadcaster  — publishes sensor_msgs/JointState to /joint_states
-# joint_group_position_controller — receives Float64MultiArray commands
+# The active joint command path is:
+#   /joint_angles (motor space, 8 values)
+#        -> sim_bridge_node decouples knee commands
+#        -> joint_group_position_controller (geometric / URDF space, same 8-joint order)
 #
-# Joint order in joint_group_position_controller MUST match /joint_angles:
-#   [fr_hip, fr_shoulder, fr_knee,
-#    fl_hip, fl_shoulder, fl_knee,
-#    rr_hip, rr_shoulder, rr_knee,
-#    rl_hip, rl_shoulder, rl_knee]
+# Joint order in joint_group_position_controller must match the post-bridge
+# geometric / URDF command vector:
+#   [fr_shoulder_joint, fr_knee_joint,
+#    fl_shoulder_joint, fl_knee_joint,
+#    rr_shoulder_joint, rr_knee_joint,
+#    rl_shoulder_joint, rl_knee_joint]
 
 controller_manager:
   ros__parameters:
@@ -18,6 +21,10 @@ controller_manager:
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
+    # NOTE:
+    # This controller consumes geometric / URDF joint angles.
+    # It does NOT consume the raw /joint_angles motor-space vector directly.
+    # sim_bridge_node performs the knee decoupling before commands reach this controller.
     joint_group_position_controller:
       type: position_controllers/JointGroupPositionController
 

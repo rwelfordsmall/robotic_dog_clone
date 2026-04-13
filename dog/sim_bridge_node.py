@@ -1,29 +1,26 @@
 """
 sim_bridge_node.py
 ------------------
-Bridges between the dog control stack and Gazebo Fortress simulation.
 
-In hardware mode the Teensy 4.1 firmware handles:
-  /joint_angles  (Float32MultiArray) → CAN motors
-  CAN feedback   → /joint_states  (Float32MultiArray [pos*12, vel*12, cur*12])
-  MPU-6050       → /imu/data  (Imu)  and  /imu/euler (Vector3, degrees)
+Bridge between the repo's motor-space joint command topic and Gazebo's
+geometric / URDF joint controller topic.
 
-In sim mode this node replaces the Teensy:
+Input:
+- /joint_angles
+- 8 motor-space joint commands in radians
+- order: [FR_sho, FR_kne, FL_sho, FL_kne, RR_sho, RR_kne, RL_sho, RL_kne]
 
-Subscriptions:
-  /joint_angles         (std_msgs/Float32MultiArray[8])   from gait_node (8DOF, no hips)
-  /joint_states         (sensor_msgs/JointState)          from joint_state_broadcaster
-  /imu/data             (sensor_msgs/Imu)                 from Gazebo IMU sensor
-  /odom                 (nav_msgs/Odometry)                from Gazebo OdometryPublisher
-                                                           (only active in autonomous mode)
+Output:
+- /joint_group_position_controller/commands
+- 8 geometric / URDF joint commands in radians
+- same ordering
 
-Publications:
-  /joint_group_position_controller/commands
-                        (std_msgs/Float64MultiArray[12])  to ign_ros2_control
-  /imu/euler            (geometry_msgs/Vector3)           roll, pitch in DEGREES
-                                                          (matches Teensy output)
-  /tf                   (odom → base_link transform)       when /odom is received;
-                                                           required by Nav2 and SLAM
+Knee decoupling rule:
+    shoulder_geometric = shoulder_motor
+    knee_geometric     = knee_motor - shoulder_motor
+
+This node should preserve the shared convention used by the gait stack and
+provide a single observation point for validating motor-space -> URDF conversion.
 """
 
 import math
@@ -51,9 +48,6 @@ JOINT_NAMES = [
 ]
 NUM_JOINTS = len(JOINT_NAMES)
 
-# Map joint name → index in JOINT_NAMES (for reordering JointState feedback)
-_JOINT_INDEX = {name: i for i, name in enumerate(JOINT_NAMES)}
-
 # ── Hardware → geometric joint conversion ──────────────────────────────────
 # The real robot uses a belt-drive on the knee: the motor encoder measures
 #   motor_knee = geometric_shoulder + geometric_knee   (coupled)
@@ -63,17 +57,23 @@ _JOINT_INDEX = {name: i for i, name in enumerate(JOINT_NAMES)}
 # Indices within the 8-element command vector:
 #   [FR_sho(0), FR_kne(1), FL_sho(2), FL_kne(3),
 #    RR_sho(4), RR_kne(5), RL_sho(6), RL_kne(7)]
-_SHOULDER_IDX = (0, 2, 4, 6)
-_KNEE_IDX     = (1, 3, 5, 7)
 
+FR_SHO = 0
+FR_KNE = 1
+FL_SHO = 2
+FL_KNE = 3
+RR_SHO = 4
+RR_KNE = 5
+RL_SHO = 6
+RL_KNE = 7
 
-def _motor_to_geometric(motor: list) -> list:
-    """Convert 8 hardware motor commands to 8 geometric joint angles."""
-    geo = list(motor)
-    # Decouple belt-drive knee: geometric_knee = motor_knee - motor_shoulder
-    for sho, kne in zip(_SHOULDER_IDX, _KNEE_IDX):
-        geo[kne] = motor[kne] - motor[sho]
-    return geo
+EXPECTED_LEN = 8
+LEG_PAIRS = [
+    ("FR", FR_SHO, FR_KNE),
+    ("FL", FL_SHO, FL_KNE),
+    ("RR", RR_SHO, RR_KNE),
+    ("RL", RL_SHO, RL_KNE),
+]
 
 
 def _quat_to_roll_pitch_deg(q):
@@ -169,26 +169,49 @@ class SimBridgeNode(Node):
             10,
         )
 
+        self.debug_pub = self.create_publisher(
+            Float64MultiArray,
+            "/joint_angles_geometric_debug",
+            10
+        )
+                
+        self.declare_parameter("debug_joint_conversion", False)
+        self.debug_joint_conversion = bool(
+            self.get_parameter("debug_joint_conversion").value
+        )
+
+        self._last_debug_log_time = 0.0
+        self._debug_log_period_sec = 1.0
         # Republish the last command at 20 Hz so the position controller
         # receives it as soon as it becomes active.
         self.create_timer(0.05, self._republish_cmd)
 
         self.get_logger().info('sim_bridge_node started — bridging to Gazebo Fortress')
-
+        self.get_logger().info(
+            f"sim_bridge_node ready | debug_joint_conversion={self.debug_joint_conversion}"
+        )
     # ─────────────────────────────────────────────────────────────────
     def _joint_angles_cb(self, msg: Float32MultiArray):
-        """Cache and forward /joint_angles (Float32[8]) → position controller (Float64[8])."""
-        data = msg.data
-        if len(data) != NUM_JOINTS:
-            self.get_logger().warn(
-                f'Expected {NUM_JOINTS} joint angles, got {len(data)} — dropping'
-            )
+        """Cache and forward /joint_angles (Float32[8]) -> geometric controller commands (Float64[8])."""
+        motor_positions = [float(v) for v in msg.data]
+
+        try:
+            geo_positions = self._motor_to_geometric(motor_positions)
+        except ValueError as exc:
+            self.get_logger().error(f"Bad /joint_angles message: {exc}")
             return
 
+        self._log_conversion(motor_positions, geo_positions)
+
         cmd = Float64MultiArray()
-        cmd.data = _motor_to_geometric([float(v) for v in data])
+        cmd.data = geo_positions
         self._last_cmd = cmd
         self._cmd_pub.publish(cmd)
+
+        if self.debug_joint_conversion:
+            dbg = Float64MultiArray()
+            dbg.data = geo_positions
+            self.debug_pub.publish(dbg)
 
     def _republish_cmd(self):
         """Republish last joint command so controller picks it up once active."""
@@ -239,7 +262,48 @@ class SimBridgeNode(Node):
     def _joint_states_cb(self, msg: JointState):
         """Republish Gazebo joint states on /joint_states_sim for state_manager."""
         self._joint_state_sim_pub.publish(msg)
+    
+    def _motor_to_geometric(self, motor_positions: list[float]) -> list[float]:
+        """
+        Convert 8 motor-space joint commands into 8 geometric / URDF joint commands.
+        """
+        if len(motor_positions) != EXPECTED_LEN:
+            raise ValueError(
+                f"Expected {EXPECTED_LEN} motor commands, got {len(motor_positions)}"
+            )
 
+        geo = list(motor_positions)
+        for _, sho_idx, kne_idx in LEG_PAIRS:
+            geo[kne_idx] = motor_positions[kne_idx] - motor_positions[sho_idx]
+        return geo
+    
+    def _log_conversion(self, motor_positions: list[float], geo_positions: list[float]) -> None:
+        if not self.debug_joint_conversion:
+            return
+
+        now = self.get_clock().now().nanoseconds / 1e9
+        if (now - self._last_debug_log_time) < self._debug_log_period_sec:
+            return
+        self._last_debug_log_time = now
+        
+        self.get_logger().info(
+            "Motor -> geometric conversion:\n"
+            + "\n".join(
+                (
+                    f"  {leg}: "
+                    f"motor(sho={motor_positions[sho_idx]: .4f}, kne={motor_positions[kne_idx]: .4f}) -> "
+                    f"geo(sho={geo_positions[sho_idx]: .4f}, kne={geo_positions[kne_idx]: .4f})"
+                )
+                for leg, sho_idx, kne_idx in LEG_PAIRS
+            )
+        )
+        for _, sho_idx, kne_idx in LEG_PAIRS:
+            expected = motor_positions[kne_idx] - motor_positions[sho_idx]
+            actual = geo_positions[kne_idx]
+            if abs(expected - actual) > 1e-9:
+                self.get_logger().error(
+                    f"Bridge conversion mismatch: expected {expected}, got {actual}"
+                )
 
 def main(args=None):
     rclpy.init(args=args)

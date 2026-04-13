@@ -1,124 +1,161 @@
 """
 robot_config.py
 ---------------
-Physical constants and motor configuration for the Dog quadruped robot.
 
-Hardware:
-  - CubeMars AK45-36 brushless actuators (CAN bus, MIT mini cheetah protocol)
-  - Teensy 4.1 running micro-ROS (CAN1 front legs, CAN2 rear legs)
-  - Jetson Orin Nano running ROS2 Humble
-  - mjbots power_dist r4.5b power distribution board
+Central configuration for the active quadruped control stack.
 
-All joint angles are in RADsIANS throughout this package.
-The IK solver works internally in degrees but outputs are converted to radians.
+This file separates:
+- physical leg geometry assumptions
+- active gait tuning parameters
+- neutral stance definitions
+- motor/geometric conversion conventions
+- joint limits, CAN protocol limits, and controller values
 
-Motor zeroing convention:
-  Each motor is physically set to its mechanical zero using the calibration tool.
-  Mechanical zero positions:
-    Hip:      leg pointing straight out laterally from the body (abduction = 0)
-    Shoulder: upper leg pointing straight down (vertical, no flex)
-    Knee:     lower leg inline with upper leg (fully extended, no flex)
-  After zeroing, the motor CAN position command 0.0 rad = that mechanical zero.
-  NEUTRAL_ANGLES are the computed IK angles for the default standing pose.
+Important conventions
+---------------------
+The active robot path is currently modeled as an 8-DOF sagittal-leg system:
+- 4 shoulder joints
+- 4 knee joints
+- no active hip ab/adduction in the current end-to-end gait/IK path
 
-Edit this file to match your physical build dimensions.
+Joint spaces used in this repo:
+1. Geometric / URDF space
+   - used by IK/FK and Gazebo joint controllers
+
+2. Motor command space
+   - published on /joint_angles
+   - includes belt-drive knee coupling
+
+Knee coupling rule in motor space:
+    shoulder_motor = shoulder_geometric
+    knee_motor     = shoulder_geometric + knee_geometric
+
+Therefore:
+    knee_geometric = knee_motor - shoulder_motor
+
+All joint command constants in this file are in radians unless otherwise noted.
+The IK solver may work internally in degrees, but outputs are converted to radians.
 """
 
-HIP_LENGTH    =   0.0   # 8DOF model: shoulder joints mount directly to base_link
-UPPER_LENGTH  = 218.25   # CAD-derived, start with symmetric upper/lower lengths
-LOWER_LENGTH  = 240.0   # from URDF lower joint pivot offset ≈ 240.26 mm
+# ---------------------------------------------------------------------------
+# 1. Physical leg geometry (mm)
+# ---------------------------------------------------------------------------
 
-BODY_LENGTH   = 648.0   # shoulder pivot x: +0.324 to -0.324 m
-BODY_WIDTH    = 233.0   # shoulder pivot y: +0.1165 to -0.1165 m
+# NOTE:
+# The URDF/xacro remains the authoritative source for simulated joint layout
+# and link origins. These values are the simplified dimensions used by the
+# active sagittal control model and should be kept aligned with Gazebo behavior.
 
-STAND_HEIGHT  = 396.2   # conservative first estimate for 0.60 / -0.60 neutral
-STEP_HEIGHT   =  70.0   # reduced from old robot
-STEP_LENGTH   =  200.0  # reduced to avoid shuffling / overreach
-STEP_DURATION =   0.45  # slightly slower first pass
+# Active kinematic model: sagittal 2-link leg for the current 8DOF robot path.
+# The original software stack assumed an additional hip ab/adduction DOF, but
+# the active gait/IK pipeline does not command that DOF.
+HIP_LENGTH = 0.0
 
-# ─────────────────────────────────────────────
-# BODY POSE LIMITS  (degrees, used inside gait/state nodes)
-# ─────────────────────────────────────────────
+# Shared IK/FK link lengths.
+# Keep these aligned with the effective URDF leg geometry as closely as possible.
+UPPER_LENGTH = 218.25
+LOWER_LENGTH = 240.0
+
+# Body dimensions between shoulder pivots, used by higher-level pose/gait logic.
+BODY_LENGTH = 648.0   # shoulder pivot x: +0.324 to -0.324 m
+BODY_WIDTH  = 233.0   # shoulder pivot y: +0.1165 to -0.1165 m
+
+# ---------------------------------------------------------------------------
+# 2. Active gait tuning
+# ---------------------------------------------------------------------------
+
+# Neutral downward-positive foot depth used by the active sagittal gait path.
+# This should remain consistent with the chosen neutral stance.
+STAND_HEIGHT = 396.2
+
+# Swing-foot lift height used by the gait generator, in mm.
+# After Patch 2, this value is intended to match the actual generated swing apex.
+STEP_HEIGHT = 70.0
+
+# Full fore-aft swing distance used by the gait generator, in mm.
+# After Patch 2, this value is intended to match the actual generated sagittal sweep.
+STEP_LENGTH = 200.0
+
+# Nominal step duration used by gait/state logic.
+STEP_DURATION = 0.45
+
+# ---------------------------------------------------------------------------
+# 3. Body pose limits (degrees)
+# Used inside gait/state nodes
+# ---------------------------------------------------------------------------
+
 MAX_BODY_ROLL  = 15.0
 MAX_BODY_PITCH = 15.0
 MAX_BODY_YAW   = 20.0
 
-# ─────────────────────────────────────────────
-# CAN MOTOR CONFIGURATION
-# ─────────────────────────────────────────────
-# CAN bus → Teensy 4.1 pins:
-#   CAN1: TX=22, RX=23  — front legs (FR + FL)
-#   CAN3: TX=31, RX=30  — rear  legs (RR + RL)
+# ---------------------------------------------------------------------------
+# 4. Neutral stance definition
+# ---------------------------------------------------------------------------
+
+# Canonical neutral Cartesian target for the active sagittal model:
+# x = 0 mm, z = STAND_HEIGHT mm (downward-positive)
+NEUTRAL_CARTESIAN = (0.0, STAND_HEIGHT)
+
+# NEUTRAL_ANGLES are MOTOR-SPACE commands published on /joint_angles.
+# Order:
+#   [FR_sho, FR_kne, FL_sho, FL_kne, RR_sho, RR_kne, RL_sho, RL_kne]
 #
-# Each motor needs a unique CAN ID (1–127).
-# Set IDs using the CubeMars R-Link USB adapter + CubeMars debugging software.
-# ─────────────────────────────────────────────
-# CAN_ID_MAP[leg_index][joint_index] = (can_bus, motor_id)
-#   leg:   0=FR, 1=FL, 2=RR, 3=RL
-#   joint: 1=shoulder, 2=knee  (hip removed — static dummy, 8DOF)
-#   can_bus: 1=CAN1 (front), 2=CAN2 (rear)
-CAN_ID_MAP = {
-    # Front Right — CAN1
-    (0, 1): (1, 0x79),  # FR Shoulder (121)
-    (0, 2): (1, 0x7A),  # FR Knee     (122)
-
-    # Front Left  — CAN1
-    (1, 1): (1, 0x75),  # FL Shoulder (117)
-    (1, 2): (1, 0x78),  # FL Knee     (120)
-
-    # Rear Right  — CAN3
-    (2, 1): (3, 0x73),  # RR Shoulder (115)
-    (2, 2): (3, 0x74),  # RR Knee     (116)
-
-    # Rear Left   — CAN3
-    (3, 1): (3, 0x76),  # RL Shoulder (118)
-    (3, 2): (3, 0x77),  # RL Knee     (119)
-}
-
-# Flat list: index = leg*2 + (joint-1) → motor_id (matches Teensy MOTOR_ID[8])
-# Order: FR_sho, FR_kne, FL_sho, FL_kne, RR_sho, RR_kne, RL_sho, RL_kne
-MOTOR_IDS = [CAN_ID_MAP[(leg, joint)][1]
-             for leg in range(4) for joint in range(1, 3)]
-
-# ─────────────────────────────────────────────
-# MIT MINI CHEETAH CAN PROTOCOL LIMITS
-# AK45-36 operating ranges
-# ─────────────────────────────────────────────
-CAN_POS_MIN  = -12.5    # rad
-CAN_POS_MAX  =  12.5    # rad
-CAN_VEL_MIN  = -45.0    # rad/s
-CAN_VEL_MAX  =  45.0    # rad/s
-CAN_KP_MIN   =   0.0    # N·m/rad
-CAN_KP_MAX   = 500.0    # N·m/rad
-CAN_KD_MIN   =   0.0    # N·m·s/rad
-CAN_KD_MAX   =   5.0    # N·m·s/rad
-CAN_TRQ_MIN  = -18.0    # N·m
-CAN_TRQ_MAX  =  18.0    # N·m
-
-# Default impedance gains for position control
-CAN_KP_DEFAULT  = 150.0   # N·m/rad — stiff position hold
-CAN_KD_DEFAULT  =   2.0   # N·m·s/rad — light damping
-
-# ─────────────────────────────────────────────
-# JOINT ANGLE LIMITS  (radians)
-# Soft limits applied before sending CAN commands.
-# Tune to match your physical joint stops.
-# ─────────────────────────────────────────────
-JOINT_ANGLE_MIN = -2.618   # -150°
-JOINT_ANGLE_MAX =  2.618   #  150°
-
-# ─────────────────────────────────────────────
-# JOINT DIRECTION FLAGS
-# Set to -1 if the motor rotates opposite to the IK convention.
-# IK convention: hip=outward-positive, shoulder=forward-down-positive,
-#                knee=bend-positive (negative IK angle = bent)
+# Coupling reminder:
+#   shoulder_motor = shoulder_geometric
+#   knee_motor     = shoulder_geometric + knee_geometric
 #
-# How to verify each axis (motors zeroed, low Kp):
-#   Hip:      command +0.2 rad → leg should swing OUTWARD. If it goes inward, flip to -1.
-#   Shoulder: command +0.2 rad → leg should swing FORWARD-DOWN. If backward, flip to -1.
-#   Knee:     command +0.2 rad → leg should extend (straighten). If it bends, flip to -1.
-#             Note: knee motor is belt-driven from the body — verify after shoulder is confirmed.
-# ─────────────────────────────────────────────
+# Therefore, for Gazebo / URDF geometric space:
+#   knee_geometric = motor_knee - motor_shoulder
+#
+# Example:
+#   shoulder_motor =  0.60 rad
+#   knee_motor     = -0.60 rad
+#   knee_geometric = -0.60 - 0.60 = -1.20 rad
+#
+# Do NOT publish NEUTRAL_ANGLES directly to the Gazebo controller without
+# first decoupling the knee.
+NEUTRAL_ANGLES = [
+     0.60, -0.60,   # FR
+     0.60, -0.60,   # FL
+     0.60, -0.60,   # RR
+     0.60, -0.60,   # RL
+]
+
+SIT_ANGLES = [
+     1.1346, -1.1346,   # FR
+     1.1346, -1.1346,   # FL
+     1.1346, -1.1346,   # RR
+     1.1346, -1.1346,   # RL
+]
+
+# Deep sit: shoulder tilts backward, knee bends moderately.
+# Body rests low; tune shoulder/knee magnitudes to match physical geometry.
+#   shoulder < 0  -> upper leg tilts rearward
+#   knee_motor    -> shoulder_geometric + knee_geometric
+DEEP_SIT_ANGLES = [
+    -0.6, -1.0,   # FR
+    -0.6, -1.0,   # FL
+    -0.6, -1.0,   # RR
+    -0.6, -1.0,   # RL
+]
+
+# ---------------------------------------------------------------------------
+# 5. Motor/geometric joint conversion
+# ---------------------------------------------------------------------------
+
+# Tuple key format:
+#   (leg_index, joint_index)
+# where:
+#   leg_index:  0=FR, 1=FL, 2=RR, 3=RL
+#   joint_index: 1=shoulder, 2=knee
+
+# JOINT_DIRECTION maps geometric / IK angles into motor command direction.
+#
+# Verification convention:
+#   Shoulder: positive command should move the leg in the positive shoulder
+#             direction defined by the active geometric model.
+#   Knee:     verify only after shoulder direction is confirmed, since the
+#             knee motor is belt-coupled.
 JOINT_DIRECTION = {
     (0, 1):  1, (0, 2):  1,   # FR shoulder, knee
     (1, 1):  1, (1, 2):  1,   # FL shoulder, knee
@@ -126,11 +163,9 @@ JOINT_DIRECTION = {
     (3, 1):  1, (3, 2):  1,   # RL shoulder, knee
 }
 
-# ─────────────────────────────────────────────
-# JOINT OFFSETS  (degrees)
-# Fine-tune after zeroing if motors are not exactly at mechanical zero.
-# Formula: motor_cmd_rad = direction * ik_angle_rad + radians(offset_deg)
-# ─────────────────────────────────────────────
+# JOINT_OFFSETS are fine trim offsets applied after motor zeroing.
+# Formula:
+#   motor_cmd_rad = direction * geometric_angle_rad + radians(offset_deg)
 JOINT_OFFSETS = {
     (0, 1): 0.0, (0, 2): 0.0,   # FR shoulder, knee
     (1, 1): 0.0, (1, 2): 0.0,   # FL shoulder, knee
@@ -138,52 +173,83 @@ JOINT_OFFSETS = {
     (3, 1): 0.0, (3, 2): 0.0,   # RL shoulder, knee
 }
 
-# NEUTRAL_ANGLES — REAL-ROBOT MOTOR FRAME (CAN bus convention)
-# These are the belt-drive motor encoder values at neutral stance.
-#   shoulder: same as IK shoulder angle (no coupling on shoulder).
-#   knee:     body-frame absolute angle of lower leg = shoulder + knee_geometric.
-#             motor_knee = shoulder_ik + knee_ik_geometric
-# For Gazebo / ign_ros2_control (URDF revolute convention):
-#   knee_gazebo = motor_knee - shoulder = NEUTRAL_ANGLES[knee] - NEUTRAL_ANGLES[shoulder]
-#               = -0.60 - 0.60 = -1.20 rad  (matches xacro initial -1.2224)
-# Do NOT publish NEUTRAL_ANGLES[knee] directly to the Gazebo controller.
-NEUTRAL_ANGLES = [
-     0.60, -0.60,   # FR: shoulder (motor), knee (motor-frame, body absolute)
-     0.60, -0.60,   # FL
-     0.60, -0.60,   # RR
-     0.60, -0.60,   # RL
-]
+# ---------------------------------------------------------------------------
+# 6. CAN motor configuration
+# ---------------------------------------------------------------------------
 
-SIT_ANGLES = [
-     1.1346, -1.1346,   # FR: knee bent (forward-tuck sit)
-     1.1346, -1.1346,   # FL
-     1.1346, -1.1346,   # RR
-     1.1346, -1.1346,   # RL
-]
-
-# Deep sit: shoulder tilts backward, knee bends moderately.
-# Body rests low; tune shoulder/knee magnitudes to match your physical geometry.
-#   shoulder < 0  → upper leg tilts rearward
-#   knee_coupled  → shoulder_ik + knee_ik; physical bend ≈ -0.4 rad
-DEEP_SIT_ANGLES = [
-    -0.6, -1.0,   # FR: shoulder back 34°, knee moderately bent
-    -0.6, -1.0,   # FL
-    -0.6, -1.0,   # RR
-    -0.6, -1.0,   # RL
-]
-
-# ─────────────────────────────────────────────
-# SELF-RIGHTING POSES  (motor frame, same convention as NEUTRAL_ANGLES)
+# CAN bus -> Teensy 4.1 pins:
+#   CAN1: TX=22, RX=23  -> front legs (FR + FL)
+#   CAN3: TX=31, RX=30  -> rear legs  (RR + RL)
 #
-# RIGHTING_TUCK_ANGLES — all legs folded tight against the body.
-#   Used at the start and end of the righting sequence to reduce
-#   rotational inertia and avoid ground obstruction.
+# Each motor needs a unique CAN ID (1-127).
+# Set IDs using the CubeMars R-Link USB adapter + CubeMars debugging software.
 #
-# Righting push poses are built dynamically in state_manager based on
-# the IMU roll at the moment righting is triggered:
-#   push leg  : hip=+0.60 (full outward), shoulder/knee near-extended
-#   tuck leg  : hip=−0.30 (inward),       shoulder/knee tightly folded
-# ─────────────────────────────────────────────
+# CAN_ID_MAP[(leg_index, joint_index)] = (can_bus, motor_id)
+#   leg_index:  0=FR, 1=FL, 2=RR, 3=RL
+#   joint_index: 1=shoulder, 2=knee
+CAN_ID_MAP = {
+    # Front Right — CAN1
+    (0, 1): (1, 0x79),  # FR Shoulder (121)
+    (0, 2): (1, 0x7A),  # FR Knee     (122)
+
+    # Front Left — CAN1
+    (1, 1): (1, 0x75),  # FL Shoulder (117)
+    (1, 2): (1, 0x78),  # FL Knee     (120)
+
+    # Rear Right — CAN3
+    (2, 1): (3, 0x73),  # RR Shoulder (115)
+    (2, 2): (3, 0x74),  # RR Knee     (116)
+
+    # Rear Left — CAN3
+    (3, 1): (3, 0x76),  # RL Shoulder (118)
+    (3, 2): (3, 0x77),  # RL Knee     (119)
+}
+
+# Flat list: index = leg*2 + (joint-1) -> motor_id
+# Order matches the 8-value /joint_angles vector:
+#   FR_sho, FR_kne, FL_sho, FL_kne, RR_sho, RR_kne, RL_sho, RL_kne
+MOTOR_IDS = [
+    CAN_ID_MAP[(leg, joint)][1]
+    for leg in range(4)
+    for joint in range(1, 3)
+]
+
+# ---------------------------------------------------------------------------
+# 7. MIT Mini Cheetah CAN protocol limits
+# AK45-36 operating ranges
+# ---------------------------------------------------------------------------
+
+CAN_POS_MIN = -12.5    # rad
+CAN_POS_MAX =  12.5    # rad
+CAN_VEL_MIN = -45.0    # rad/s
+CAN_VEL_MAX =  45.0    # rad/s
+CAN_KP_MIN  =   0.0    # N·m/rad
+CAN_KP_MAX  = 500.0    # N·m/rad
+CAN_KD_MIN  =   0.0    # N·m·s/rad
+CAN_KD_MAX  =   5.0    # N·m·s/rad
+CAN_TRQ_MIN = -18.0    # N·m
+CAN_TRQ_MAX =  18.0    # N·m
+
+# Default impedance gains for position control
+CAN_KP_DEFAULT = 150.0
+CAN_KD_DEFAULT =   2.0
+
+# ---------------------------------------------------------------------------
+# 8. Joint limits / controller values
+# ---------------------------------------------------------------------------
+
+# Soft limits applied before sending CAN commands.
+# Tune to match physical joint stops.
+JOINT_ANGLE_MIN = -2.618   # -150 deg
+JOINT_ANGLE_MAX =  2.618   #  150 deg
+
+# ---------------------------------------------------------------------------
+# 9. Self-righting poses (motor frame, same convention as NEUTRAL_ANGLES)
+# ---------------------------------------------------------------------------
+
+# RIGHTING_TUCK_ANGLES:
+# all legs folded close to the body to reduce rotational inertia and avoid
+# ground interference at the start/end of the righting sequence.
 RIGHTING_TUCK_ANGLES = [
      1.30, -1.1346,   # FR
      1.30, -1.1346,   # FL
@@ -191,59 +257,53 @@ RIGHTING_TUCK_ANGLES = [
      1.30, -1.1346,   # RL
 ]
 
-# ─────────────────────────────────────────────
-# BNO085 9-DOF IMU  (connected directly to Jetson I2C)
-# ─────────────────────────────────────────────
-BNO085_ADDRESS   = 0x4A  # default; 0x4B if PS1 pin is pulled high
+# ---------------------------------------------------------------------------
+# 10. IMU / GPS
+# ---------------------------------------------------------------------------
+
+# BNO085 9-DOF IMU (connected directly to Jetson I2C)
+BNO085_ADDRESS   = 0x4A
 IMU_PUBLISH_RATE = 50    # Hz
 
-# ─────────────────────────────────────────────
-# u-blox SAM-M10Q GPS  (connected to Jetson UART)
-# ─────────────────────────────────────────────
-GPS_PORT      = '/dev/ttyUSB0'  # adjust to your port (ttyUSB0, ttyTHS0, ttyACM0…)
-GPS_BAUD_RATE = 9600            # SAM-M10Q factory default; raise after reconfiguring
+# u-blox SAM-M10Q GPS (connected to Jetson UART)
+GPS_PORT      = '/dev/ttyUSB0'
+GPS_BAUD_RATE = 9600
 
-# ─────────────────────────────────────────────
-# CONTROLLER AXES  (identical for Xbox and PS4)
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# 11. Controller axes / buttons
+# ---------------------------------------------------------------------------
+
+# Controller axes (identical for Xbox and PS4 for the common mappings below)
 AXIS_LEFT_X  = 0   # Strafe left/right
 AXIS_LEFT_Y  = 1   # Forward / backward
+
 # PS4 (ds4drv/hid-sony): axes 2=RX, 3=RY, 4=L2, 5=R2
 # Xbox / PS4 (xpadneo):  axes 2=L2, 3=RX, 4=RY, 5=R2
-# Set these to match your driver's axis layout (verify with: ros2 topic echo /joy)
-AXIS_RIGHT_X = 3   # Right stick X  (Xbox: 3, PS4 ds4drv: 2)
-AXIS_RIGHT_Y = 4   # Right stick Y  (Xbox: 4, PS4 ds4drv: 3)
-AXIS_LT      = 2   # L2/LT analog trigger  (Xbox: 2, PS4 ds4drv: 4)
-AXIS_RT      = 5   # R2/RT analog trigger
+# Verify with: ros2 topic echo /joy
+AXIS_RIGHT_X = 3
+AXIS_RIGHT_Y = 4
+AXIS_LT      = 2
+AXIS_RT      = 5
 
-# ─────────────────────────────────────────────
-# XBOX CONTROLLER BUTTONS
-# ─────────────────────────────────────────────
-BTN_A        = 0   # Stand / sit toggle
-BTN_B        = 1   # Reserved
-BTN_X        = 2   # Change gait
-BTN_Y        = 3   # Reserved
-BTN_LB       = 4   # Deadman enable
-BTN_RB       = 5   # Turbo speed
-BTN_BACK     = 6   # E-stop        (View button)
-BTN_START    = 7   # Reset E-stop  (Menu button)
+# Xbox controller buttons
+BTN_A     = 0   # Stand / sit toggle
+BTN_B     = 1   # Reserved
+BTN_X     = 2   # Change gait
+BTN_Y     = 3   # Reserved
+BTN_LB    = 4   # Deadman enable
+BTN_RB    = 5   # Turbo speed
+BTN_BACK  = 6   # E-stop
+BTN_START = 7   # Reset E-stop
 
-# ─────────────────────────────────────────────
-# PS4 DUALSHOCK 4 BUTTONS
-# Axes 0-5 are identical to Xbox above.
-# Linux hid-sony driver button order (USB or ds4drv Bluetooth):
-#   0: Square(□)  1: Cross(×)  2: Circle(○)  3: Triangle(△)
-#   4: L1         5: R1        6: L2(digital) 7: R2(digital)
-#   8: Share      9: Options   10: L3         11: R3  12: PS  13: Touchpad
-# ─────────────────────────────────────────────
-PS4_BTN_SQUARE  = 0   # Stand / sit toggle   (equivalent to Xbox A)
-PS4_BTN_CROSS   = 1   # Reserved             (equivalent to Xbox B)
-PS4_BTN_CIRCLE  = 2   # Change gait          (equivalent to Xbox X)
-PS4_BTN_TRI     = 3   # Reserved             (equivalent to Xbox Y)
-PS4_BTN_L1      = 4   # Deadman enable       (same index as Xbox LB)
-PS4_BTN_R1      = 5   # Turbo speed          (same index as Xbox RB)
-PS4_BTN_BACK    = 8   # E-stop               (Share button)
-PS4_BTN_START   = 9   # Reset E-stop         (Options button)
+# PS4 DualShock 4 button layout
+PS4_BTN_SQUARE = 0   # Stand / sit toggle
+PS4_BTN_CROSS  = 1   # Reserved
+PS4_BTN_CIRCLE = 2   # Change gait
+PS4_BTN_TRI    = 3   # Reserved
+PS4_BTN_L1     = 4   # Deadman enable
+PS4_BTN_R1     = 5   # Turbo speed
+PS4_BTN_BACK   = 8   # E-stop
+PS4_BTN_START  = 9   # Reset E-stop
 
 DEADMAN_BUTTON    = BTN_LB
 JOYSTICK_SCALE    = 0.7
@@ -251,115 +311,80 @@ TURN_SCALE        = 1.5
 TURBO_MULTIPLIER  = 2.0
 JOYSTICK_DEADZONE = 0.1
 
-# ─────────────────────────────────────────────
-# JUMP FORWARD KEYFRAME ANGLES  (motor frame)
-#
-# SASSA body is rear-heavy. Two fixes applied:
-#
-#   1. Asymmetric crouch — front legs deeper than rear so the body tilts
-#      nose-down, loading the front feet and preventing the rear-heavy
-#      body from rearing up before launch.
-#
-#   2. Straight-leg forward launch — when motor_shoulder = motor_knee,
-#      geo_kne = motor_kne − motor_sho = 0.00 (fully straight leg).
-#      A straight leg angled at S rad from vertical launches the body at
-#      exactly S rad from vertical (= 90°−S from horizontal).
-#
-#      At S = 0.80 rad (≈ 46°):
-#        foot_x = 640 · sin(0.80) ≈ 459 mm forward of hip
-#        foot_z = 640 · cos(0.80) ≈ 446 mm below hip
-#        launch angle ≈ 44° from horizontal  ← near-optimal for range
-#
-#      Previous design (shoulder=0.35, knee=0.00) gave only ~10° from
-#      vertical = 80° from horizontal = nearly straight up, minimal range.
-#
-# geometric_knee = motor_knee − motor_shoulder  (belt-drive decoupling)
-# Crouch front: geo_kne = −1.15 − 1.15 = −2.30 rad
-# Crouch rear:  geo_kne = −1.00 − 1.00 = −2.00 rad
-# Launch:       geo_kne =  0.80 − 0.80 =  0.00 rad  (fully straight, 46° forward)
-#
-# To increase distance further: deepen the crouch (larger magnitude = more
-# stored energy = higher launch velocity).  The launch angle is already at
-# the theoretical optimum (~44°), so crouch depth is the only remaining lever.
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# 12. Jump keyframe angles (motor frame)
+# ---------------------------------------------------------------------------
+
+# JUMP_CROUCH_ANGLES:
+# Front legs crouch deeper than rear to bias the body nose-down before launch.
 JUMP_CROUCH_ANGLES = [
-     1.30, -1.30,   # FR — deeper (geo=−2.60): more stored energy + nose-down
+     1.30, -1.30,   # FR
      1.30, -1.30,   # FL
-     1.00, -1.00,   # RR — asymmetry (0.30 rad) keeps CoM forward
+     1.00, -1.00,   # RR
      1.00, -1.00,   # RL
 ]
+
+# JUMP_LAUNCH_ANGLES:
+# Straight-leg launch in motor frame.
+# Since geometric_knee = motor_knee - motor_shoulder, matching shoulder and knee
+# yields geometric_knee ~= 0.0 (straight leg).
 JUMP_LAUNCH_ANGLES = [
-     0.80,  0.80,   # FR — straight leg (geo=0.00) at 46° → foot 459 mm forward
-     0.80,  0.80,   # FL   near-optimal 44° launch angle for maximum range
+     0.80,  0.80,   # FR
+     0.80,  0.80,   # FL
      0.80,  0.80,   # RR
      0.80,  0.80,   # RL
 ]
+
 JUMP_TUCK_ANGLES = [
-     1.25, -1.25,   # FR — tight tuck while airborne (geo_kne = −2.50 rad)
+     1.25, -1.25,   # FR
      1.25, -1.25,   # FL
      1.25, -1.25,   # RR
      1.25, -1.25,   # RL
 ]
+
 JUMP_LAND_ANGLES = [
-     1.20, -1.20,   # FR — deeper absorption (geo=−2.40)
+     1.20, -1.20,   # FR
      1.20, -1.20,   # FL
-     0.50, -0.50,   # RR — very extended (geo=−1.00): resists nose-down pitch on landing
+     0.50, -0.50,   # RR
      0.50, -0.50,   # RL
 ]
 
-# ─────────────────────────────────────────────
-# BACKFLIP KEYFRAME ANGLES  (motor frame)
-#
-# Two-phase launch — avoids the "T-rex balance" failure mode:
-#
-#   Symmetric launch (all legs S=K=0.80), held for 0.40 s:
-#     This is the MIT Mini Cheetah approach.  All four feet push off together
-#     at 46° forward.  Because the SASSA body is rear-heavy, the front feet
-#     carry less load and leave the ground first — the body then rotates
-#     nose-up around the rear feet that are still in contact.  Holding the
-#     command for 0.40 s gives ~20 ticks at 50 Hz for the legs to fully
-#     extend and transfer maximum nose-up angular momentum before the rear
-#     feet also leave.
-#
-#     Asymmetric (front push + rear tuck) failed because the rear legs
-#     barely moved from the crouch position (1.30 → 1.25, only 0.05 rad),
-#     so the rear feet stayed on the ground and counteracted the nose-up
-#     torque from the front legs — producing only a partial rear-up, not a
-#     full flip.
-#
-# Launch: geo_kne = 0.80 − 0.80 = 0.00 (straight leg, 46° forward, all legs)
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# 13. Backflip keyframe angles (motor frame)
+# ---------------------------------------------------------------------------
+
 BACKFLIP_CROUCH_ANGLES = [
-     1.40, -1.40,   # FR — deep crouch (geo_kne = −2.80 rad)
+     1.40, -1.40,   # FR
      1.40, -1.40,   # FL
      1.40, -1.40,   # RR
      1.40, -1.40,   # RL
 ]
-# Phase 1 of launch — front lifts, rear stays planted (pivot):
-#   Front legs extend to 46° forward, lifting the front feet off the ground.
-#   Rear stays crouched so it remains on the ground as a fixed pivot.
-#   The body rotates nose-up around the rear feet until ~90°.
+
+# Phase 1: front lifts while rear remains planted to create a pivot.
 BACKFLIP_FRONT_LIFT_ANGLES = [
-     0.80,  0.80,   # FR — straight leg 46° fwd: front feet leave ground
-     0.80,  0.80,   # FL   body pivots nose-up around grounded rear feet
-     1.40, -1.40,   # RR — stay crouched: rear feet remain the pivot point
+     0.80,  0.80,   # FR
+     0.80,  0.80,   # FL
+     1.40, -1.40,   # RR
      1.40, -1.40,   # RL
 ]
-# Phase 2 of launch — rear explodes, front immediately tucks:
+
+# Phase 2: rear launches while front tucks.
 BACKFLIP_LAUNCH_ANGLES = [
-     1.50, -1.50,   # FR — tuck immediately: front is airborne, reduce I now
+     1.50, -1.50,   # FR
      1.50, -1.50,   # FL
-     0.80,  0.80,   # RR — explosive rear push: launches body fully airborne
+     0.80,  0.80,   # RR
      0.80,  0.80,   # RL
 ]
+
 BACKFLIP_TUCK_ANGLES = [
-     1.50, -1.50,   # FR — maximum tuck: I drops ~8× vs extended → 3× faster spin
+     1.50, -1.50,   # FR
      1.50, -1.50,   # FL
      1.50, -1.50,   # RR
      1.50, -1.50,   # RL
 ]
+
 BACKFLIP_LAND_ANGLES = [
-     0.70, -0.70,   # FR — extend to catch landing
+     0.70, -0.70,   # FR
      0.70, -0.70,   # FL
      0.70, -0.70,   # RR
      0.70, -0.70,   # RL

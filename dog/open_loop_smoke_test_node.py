@@ -1,19 +1,15 @@
 """
-step_test_node.py
+open_loop_smoke_test.py
 -----------------
-Very simple open-loop stepping validator for the migrated 8-DOF robot.
 
-Purpose:
-  - Validate that the robot can execute clear lift / swing / place motions
-    one leg at a time from a stable neutral pose.
-  - Isolate URDF + controller + joint convention issues from the full gait stack.
+Open-loop motor-command smoke test for the migrated 8-DOF robot.
 
-Published topics:
-  /joint_angles  (std_msgs/Float32MultiArray)  — 8 motor commands in radians
-  /can_enable    (std_msgs/Bool)               — enable motor mode
+This node is intentionally simple:
+- it publishes hand-authored motor-frame poses to /joint_angles
+- it is useful for checking actuator response, sequencing, and controller behavior
+- it is NOT the canonical validator for Cartesian IK, foot-frame signs, or URDF geometry
 
-Joint order:
-  [FR_sho, FR_kne, FL_sho, FL_kne, RR_sho, RR_kne, RL_sho, RL_kne]
+For kinematic validation, use the shared-IK validation node instead.
 """
 
 import time
@@ -69,6 +65,10 @@ def run_sequence(node: StepTestNode):
     pair_b = [1, 2]   # FL, RR
     names = ['FR', 'FL', 'RR', 'RL']
 
+    # These are hand-tuned MOTOR-FRAME poses.
+    # They are not derived from shared Cartesian IK targets and should not be used
+    # as proof of geometric correctness.
+    
     # Slightly stronger support bias than before
     support_shift = (0.53, -0.74)
     center_support = (0.60, -0.64)
